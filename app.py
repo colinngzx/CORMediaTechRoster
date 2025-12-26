@@ -172,11 +172,37 @@ def fetch_data():
         return pd.DataFrame()
 
 def apply_styling():
+    """Forces a clean White/Paper look regardless of system settings."""
     st.markdown("""
         <style>
-        .stApp { background-color: #f8f9fa; }
-        div.stButton > button[kind="primary"] { background-color: #007AFF; border:none; border-radius: 8px; }
-        div[data-testid="stMetricValue"] { font-size: 1.2rem; }
+        /* FORCE LIGHT MODE: Background and Text */
+        [data-testid="stAppViewContainer"] {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }
+        [data-testid="stHeader"] {
+            background-color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #f8f9fa !important;
+        }
+        
+        /* Button Styling */
+        div.stButton > button[kind="primary"] { 
+            background-color: #007AFF; 
+            border:none; 
+            border-radius: 8px; 
+            color: white !important;
+        }
+        div.stButton > button[kind="secondary"] { 
+            color: #000000 !important;
+            border-color: #cccccc !important;
+        }
+        
+        /* Metric and Table Styling */
+        div[data-testid="stMetricValue"] { font-size: 1.2rem; color: #000000 !important; }
+        
+        /* Hide default Streamlit menu for clean look */
         header {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
@@ -231,6 +257,8 @@ def main():
         st.subheader("2. Review Dates")
         
         dates_df = pd.DataFrame({"Selected Dates": [d.strftime("%a, %d %b %Y") for d in st.session_state.roster_dates]})
+        
+        # Simple dataframe display
         st.dataframe(dates_df, use_container_width=True, height=200, hide_index=True)
         
         c1, c2 = st.columns(2)
@@ -368,7 +396,7 @@ def main():
             # Fill Roles defined in CONFIG
             for role_conf in CONFIG["ROLES"]:
                 if role_conf["key"] == "cam_2": 
-                    # Special case: Cam 2 usually empty unless specified otherwise
+                    # Special case: Cam 2 usually empty to save people for other roles
                     day_data[role_conf["label"]] = ""
                     continue
 
@@ -407,10 +435,24 @@ def main():
             display_df = display_df.loc[display_df.index.isin(display_cols)]
             display_df = display_df.reindex(display_cols).reset_index().rename(columns={"index": "Role"})
             
-            # Visual Styling
+            # === STYLING FOR PURE WHITE LOOK ===
+            # Force background white, text black, centered
+            styler = display_df.style.set_properties(**{
+                'background-color': '#ffffff',
+                'color': '#000000',
+                'border-color': '#e0e0e0',
+                'text-align': 'center'
+            })
+            
+            # Highlight the "Role" column in light blue with black text
+            try:
+                styler = styler.map(lambda v: 'background-color: #e6f2ff; font-weight: bold; color: black', subset=['Role'])
+            except AttributeError:
+                # Fallback for older pandas versions
+                styler = styler.applymap(lambda v: 'background-color: #e6f2ff; font-weight: bold; color: black', subset=['Role'])
+
             st.dataframe(
-                display_df.style.set_properties(**{'text-align': 'center'})
-                .applymap(lambda v: 'background-color: #e6f2ff; font-weight: bold', subset=['Role']),
+                styler,
                 use_container_width=True, 
                 hide_index=True
             )
@@ -427,6 +469,8 @@ def main():
             st.write("#### 📊 Technical Workload Stats")
             st.info("ℹ️ **Scoring Rule:** Technical Roles = 1 Point. Team Lead = 0 Points (to ensure leads are available for tech).")
             stats_df = engine.get_stats()
+            
+            # Style the logic check for fairness
             st.dataframe(stats_df.T, use_container_width=True)
             
         with c2:
