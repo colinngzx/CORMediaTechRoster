@@ -13,68 +13,66 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- APPLE STYLE CSS INJECTION ---
-def apply_apple_style():
+# --- FORCE WHITE THEME & APPLE FONTS ---
+def apply_custom_style():
     st.markdown("""
         <style>
-        /* Import clean font */
+        /* IMPORT FONT */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
         
-        html, body, [class*="css"] {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: #1d1d1f;
-        }
-
-        /* Headings */
-        h1, h2, h3 {
-            font-weight: 600;
-            letter-spacing: -0.5px;
-            color: #1d1d1f;
+        /* 1. FORCE WHITE BACKGROUND & BLACK TEXT (Overrides Dark Mode) */
+        .stApp {
+            background-color: white !important;
+            color: #000000 !important;
         }
         
-        /* Rounded "Pill" Buttons with apple-blue hover */
+        /* 2. TYPOGRAPHY */
+        html, body, [class*="css"], .stMarkdown, .stText {
+            font-family: 'Inter', sans-serif !important;
+            color: #000000 !important;
+        }
+        h1, h2, h3 {
+            color: #000000 !important;
+            font-weight: 600;
+        }
+
+        /* 3. BUTTON STYLING (Apple Style Pills) */
         div.stButton > button {
             border-radius: 20px;
             padding: 0.5rem 1.5rem;
             font-weight: 500;
-            border: 1px solid #e5e5ea;
-            background-color: white;
+            border: 1px solid #d1d1d6;
+            background-color: #f2f2f7; /* Light gray pill */
             color: #007AFF;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            transition: all 0.2s ease;
+            transition: all 0.2s;
         }
         div.stButton > button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             border-color: #007AFF;
+            background-color: #e5f1ff;
             color: #007AFF;
         }
         div.stButton > button[kind="primary"] {
-            background-color: #007AFF;
-            color: white;
+            background-color: #007AFF !important;
+            color: white !important;
             border: none;
         }
-        div.stButton > button[kind="primary"]:hover {
-            background-color: #0062cc;
-            color: white;
-        }
 
-        /* Clean Inputs */
+        /* 4. INPUT FIELDS (Force clear background) */
         .stTextInput input, .stSelectbox > div > div, .stMultiSelect > div > div {
-            border-radius: 12px;
-            border-color: #d1d1d6;
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border: 1px solid #d1d1d6;
         }
         
-        /* Remove default decoration */
+        /* 5. REMOVE STREAMLIT HEADER */
         header {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
 
-apply_apple_style()
+apply_custom_style()
 
 # --- HELPER: RERUN COMPATIBILITY ---
 def rerun_script():
-    """Handles rerun for different Streamlit versions"""
     if hasattr(st, 'rerun'):
         st.rerun()
     elif hasattr(st, 'experimental_rerun'):
@@ -93,6 +91,7 @@ if 'unavailability' not in st.session_state:
     st.session_state.unavailability = {}
 
 # --- LOAD TEAM NAMES ---
+# Using the same Sheet ID you provided earlier
 SHEET_ID = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
 
 @st.cache_data(ttl=60)
@@ -102,13 +101,9 @@ def get_team_data():
         df = pd.read_csv(url).fillna("")
         df.columns = df.columns.str.strip().str.lower()
         
-        # Filter Logic: Check for 'Status' column (optional)
+        # Filter Logic: Check for 'Status' column
         if 'status' in df.columns:
-            # Keep only if status is Empty or 'Active'
-            df = df[
-                (df['status'].str.lower() == 'active') | 
-                (df['status'] == '')
-            ]
+            df = df[(df['status'].str.lower() == 'active') | (df['status'] == '')]
         
         return df
     except Exception as e:
@@ -131,7 +126,7 @@ st.title("🧙‍♂️ Roster Generator")
 st.markdown("---")
 
 # ==========================================
-# STAGE 1: SELECT MONTHS & YEAR
+# STAGE 1: SELECT MONTHS
 # ==========================================
 if st.session_state.stage == 1:
     st.subheader("Select Duration")
@@ -165,11 +160,12 @@ if st.session_state.stage == 1:
             rerun_script()
 
 # ==========================================
-# STAGE 2: DATE REVIEW
+# STAGE 2: REVIEW DATES
 # ==========================================
 elif st.session_state.stage == 2:
     st.subheader("Review Dates")
-
+    
+    # Simple table for review
     if st.session_state.roster_dates:
         fmt_dates = [{"Day": d.strftime("%A"), "Date": d.strftime("%d %b %Y")} for d in st.session_state.roster_dates]
         st.dataframe(fmt_dates, use_container_width=True, height=250)
@@ -180,30 +176,23 @@ elif st.session_state.stage == 2:
     c1, c2 = st.columns(2)
     
     with c1:
-        st.caption("Add Date")
-        new_date = st.date_input("Pick a date", value=date.today(), label_visibility="collapsed")
-        if st.button("➕ Add"):
+        new_date = st.date_input("Add Date", value=date.today())
+        if st.button("➕ Add Date"):
             if new_date not in st.session_state.roster_dates:
                 st.session_state.roster_dates.append(new_date)
                 st.session_state.roster_dates.sort()
                 rerun_script()
 
     with c2:
-        st.caption("Remove Date")
         if st.session_state.roster_dates:
-            date_to_remove = st.selectbox(
-                "Select date", 
-                options=st.session_state.roster_dates,
-                format_func=lambda x: x.strftime("%d %b %Y"),
-                label_visibility="collapsed"
-            )
-            if st.button("❌ Remove"):
+            date_to_remove = st.selectbox("Remove Date", options=st.session_state.roster_dates, format_func=lambda x: x.strftime("%d %b %Y"))
+            if st.button("❌ Remove Date"):
                 if date_to_remove in st.session_state.roster_dates:
                     st.session_state.roster_dates.remove(date_to_remove)
                     st.session_state.roster_dates.sort()
                     rerun_script()
             
-    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 5])
     if col1.button("⬅️ Back"):
         st.session_state.stage = 1
@@ -248,7 +237,7 @@ elif st.session_state.stage == 3:
         rerun_script()
 
 # ==========================================
-# STAGE 4: UNAVAILABILITY (PERSON BASED)
+# STAGE 4: UNAVAILABILITY
 # ==========================================
 elif st.session_state.stage == 4:
     st.subheader("Team Availability")
@@ -265,12 +254,13 @@ elif st.session_state.stage == 4:
     dropdown_options = list(date_options_map.keys())
     person_unavailable_map = {}
 
-    st.markdown("<div style='background-color:#F5F5F7; padding:20px; border-radius:15px;'>", unsafe_allow_html=True)
+    # Render a clean list
+    st.markdown("<div style='background-color:#ffffff; border:1px solid #e5e5ea; padding:20px; border-radius:15px;'>", unsafe_allow_html=True)
     
     for person_name in all_team_names:
         c1, c2 = st.columns([1, 3])
         with c1:
-            st.markdown(f"<div style='margin-top:10px; font-weight:500;'>{person_name}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin-top:10px; font-weight:500; color:black;'>{person_name}</div>", unsafe_allow_html=True)
         with c2:
             selected_labels = st.multiselect(
                 f"Dates {person_name} is away",
@@ -279,7 +269,7 @@ elif st.session_state.stage == 4:
                 key=f"na_person_{person_name}"
             )
             person_unavailable_map[person_name] = selected_labels
-        st.markdown("<hr style='margin: 0.5rem 0; border:none; border-bottom:1px solid #e0e0e0;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin: 0.5rem 0; border:none; border-bottom:1px solid #f0f0f0;'>", unsafe_allow_html=True)
     
     st.markdown("</div>", unsafe_allow_html=True)
         
@@ -290,7 +280,6 @@ elif st.session_state.stage == 4:
         rerun_script()
         
     if col2.button("Next: Generate Roster ➡️", type="primary"):
-        # Flip map for processing
         final_unavailability = {}
         for person, labeled_dates_list in person_unavailable_map.items():
             for label in labeled_dates_list:
@@ -304,13 +293,12 @@ elif st.session_state.stage == 4:
         rerun_script()
 
 # ==========================================
-# STAGE 5: INTELLIGENT GENERATION & STACKED CSV OUTPUT
+# STAGE 5: FINAL ROSTER (EXCEL STYLE)
 # ==========================================
 elif st.session_state.stage == 5:
     st.subheader("Final Roster")
-    st.caption("Grouped by month")
     
-    # 1. Initialize logic counters
+    # --- LOGIC GENERATION ---
     load_balance_counts = {name: 0 for name in all_team_names}
     previous_week_workers = []
     
@@ -325,13 +313,12 @@ elif st.session_state.stage == 5:
     generated_rows = []
     sort_dates = st.session_state.event_details.sort_values(by="Date")
     
-    # --- GENERATION LOOP ---
     for _, row in sort_dates.iterrows():
         current_date_obj = row['Date']
         
         info_parts = []
         if row['Holy Communion']: info_parts.append("HC")
-        if row['Combined Service']: info_parts.append("Combined (MSS)")
+        if row['Combined Service']: info_parts.append("Combined")
         if not info_parts: info_parts.append("")
         if row['Notes']: info_parts.append(f"({row['Notes']})")
         
@@ -366,7 +353,7 @@ elif st.session_state.stage == 5:
             
             final_pool = fresh_legs if fresh_legs else valid
             
-            # Fallback for Team Lead
+            # Fallback logic for TL
             if role_label == "Team Lead" and not final_pool:
                  darrells = [x for x in base_candidates if "darrell" in x.lower() and x not in away_today and x not in working_today]
                  if darrells: final_pool = darrells
@@ -384,109 +371,62 @@ elif st.session_state.stage == 5:
         previous_week_workers = working_today
         generated_rows.append(day_roster)
 
-    # --- CHUNK BY MONTH & FORMAT ---
+    # --- PANDAS STYLING FOR EXCEL GRID LOOK ---
     full_df = pd.DataFrame(generated_rows)
     desired_row_order = [
          "Additional Details", "Sound Crew", "Projectionist", 
          "Stream Director", "Cam 1", "Cam 2", "Team Lead"
     ]
     
-    def create_month_table(month_subset_df):
+    def display_excel_style(month_subset_df):
+        # Transpose
         t_df = month_subset_df.set_index("Service Dates").T
         t_df = t_df.reindex(desired_row_order)
         t_df = t_df.reset_index().rename(columns={"index": "Role"})
-        return t_df
-
-    # --- STYLING FUNCTION (THE "FILLED DATES" VISUALS) ---
-    def style_dataframe(df):
-        # Header Color (Cyan/Blue like screenshot)
-        header_color = "#C3F3F5" 
         
-        return df.style.set_properties(
-            **{
-                'background-color': '#FFFFFF', 
-                'color': '#1d1d1f', 
-                'border-color': '#E5E5EA',
-                'font-size': '14px'
-            }
-        ).set_table_styles([
-            # Style the Headers (The Dates)
+        # Apply CSS Styler
+        styled = t_df.style.set_properties(**{
+            'background-color': 'white',
+            'color': 'black',
+            'border': '1px solid black',        # THE GRID LINES
+            'text-align': 'center'
+        }).set_table_styles([
+            # Style the Headers (Dates) -> Cyan Blue like screenshot
             {
                 'selector': 'th',
                 'props': [
-                    ('background-color', header_color), 
+                    ('background-color', '#C3F3F5'), 
                     ('color', 'black'),
-                    ('font-weight', '600'),
-                    ('border-bottom', '2px solid #aaaaaa'),
+                    ('font-weight', 'bold'),
+                    ('border', '1px solid black'),
                     ('text-align', 'center')
                 ]
             },
-            # Style the First Column (Role Names)
+            # Style the First Column (Roles) -> Light Green like screenshot
             {
-                'selector': 'td:first-child',
+                'selector': 'td:nth-child(1)', 
                 'props': [
-                    ('font-weight', 'bold'), 
-                    ('background-color', '#F5F5F7'),
-                    ('color', '#333333')
+                    ('background-color', '#E2EFDA'),
+                    ('font-weight', 'bold'),
+                    ('border', '1px solid black'),
+                    ('text-align', 'left'),
+                    ('padding-left', '10px')
                 ]
-            }
+            },
+            # Remove index column
+            {'selector': '.row_heading', 'props': [('display', 'none')]},
+            {'selector': '.blank', 'props': [('display', 'none')]}
         ])
+        
+        return styled, t_df
 
     grouped = full_df.groupby("Month")
     csv_output = io.StringIO()
-    
     first_table = True
     
     for month_num, group in grouped:
         month_name = calendar.month_name[month_num]
         
-        st.markdown(f"#### {month_name}")
+        st.markdown(f"### {month_name}")
         
-        visual_table = create_month_table(group)
-        
-        # DISPLAY
-        st.dataframe(style_dataframe(visual_table), use_container_width=True, hide_index=True)
-        
-        # CSV EXPORT
-        if not first_table:
-            csv_output.write("\n") 
-        visual_table.to_csv(csv_output, index=False)
-        first_table = False
-
-    # --- STATS ---
-    st.divider()
-    st.write("#### 📊 Workload Stats")
-    
-    display_stats = {name: 0 for name in all_team_names}
-    technical_roles = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]
-    
-    for day_data in generated_rows:
-        for role_key in technical_roles:
-            person = day_data.get(role_key, "")
-            if person and person != "NO FILL" and person in display_stats:
-                display_stats[person] += 1
-    
-    stats_df = pd.DataFrame(list(display_stats.items()), columns=["Name", "Shifts"])
-    stats_df = stats_df[stats_df['Shifts'] > 0].sort_values(by="Shifts", ascending=False)
-    
-    st.dataframe(
-        stats_df.T.style.set_properties(**{'background-color': 'white'}), 
-        use_container_width=True
-    )
-
-    # --- FOOTER ---
-    st.markdown("<br>", unsafe_allow_html=True)
-    colA, colB = st.columns(2)
-    with colA:
-        st.download_button(
-            label="💾 Download Excel CSV",
-            data=csv_output.getvalue(),
-            file_name="roster_final_stacked.csv",
-            mime="text/csv",
-            type="primary"
-        )
-    with colB:
-        if st.button("🔄 Start Over"):
-            st.session_state.stage = 1
-            st.session_state.roster_dates = []
-            rerun_script()
+        styled_
