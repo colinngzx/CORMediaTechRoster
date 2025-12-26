@@ -429,4 +429,49 @@ elif st.session_state.stage == 5:
         
         st.markdown(f"### {month_name}")
         
-        styled_
+        styled_table, raw_table = display_excel_style(group)
+        
+        # Display with container width to stretch
+        st.dataframe(styled_table, use_container_width=True, hide_index=True)
+        
+        # CSV Saving
+        if not first_table:
+            csv_output.write("\n") 
+        raw_table.to_csv(csv_output, index=False)
+        first_table = False
+
+    # --- DOWNLOAD & STATS ---
+    st.divider()
+    
+    st.write("#### Workload Stats")
+    display_stats = {name: 0 for name in all_team_names}
+    for day_data in generated_rows:
+        for role_key in ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]:
+            person = day_data.get(role_key, "")
+            if person and person != "NO FILL" and person in display_stats:
+                display_stats[person] += 1
+    
+    stats_df = pd.DataFrame(list(display_stats.items()), columns=["Name", "Shifts"])
+    stats_df = stats_df[stats_df['Shifts'] > 0].sort_values(by="Shifts", ascending=False)
+    
+    # Style stats table simpler
+    st.dataframe(
+        stats_df.T.style.set_properties(**{'background-color': 'white', 'color': 'black', 'border': '1px solid #ddd'}), 
+        use_container_width=True
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    colA, colB = st.columns(2)
+    with colA:
+        st.download_button(
+            label="💾 Download Excel CSV",
+            data=csv_output.getvalue(),
+            file_name="roster_final.csv",
+            mime="text/csv",
+            type="primary"
+        )
+    with colB:
+        if st.button("🔄 Start Over"):
+            st.session_state.stage = 1
+            st.session_state.roster_dates = []
+            rerun_script()
