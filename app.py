@@ -315,7 +315,7 @@ def main():
             st.session_state.stage = 4
             st.rerun()
 
-    # --- STEP 4: FINAL ROSTER WITH BALANCING LOGIC ---
+     # --- STEP 4: FINAL ROSTER WITH BALANCING ---
     elif st.session_state.stage == 4:
         st.header("Step 4: Final Roster")
         st.caption("Auto-optimizing for the most balanced workload...")
@@ -329,26 +329,21 @@ def main():
                 unavailable_by_date_str[d_str].append(name)
 
         # 2. RUN SIMULATION LOOP (Monte Carlo)
-        # We generate the roster 50 times and keep the one with the most even distribution of shifts
-        
         best_schedule = []
         best_stats = pd.DataFrame()
-        best_engine = None
-        min_std_dev = float('inf')  # Start with infinite variance
+        min_std_dev = float('inf') 
         
-        # Shows a little spinner while calculating
         with st.spinner("Finding the fairest schedule..."):
             iterations = 50
             for i in range(iterations):
-                # New engine per run to reset counters
                 temp_engine = RosterEngine(df_team)
                 temp_schedule = []
                 
-                # --- GENERATE SINGLE ROSTER ---
+                # Generate Roster
                 for idx, r_data in enumerate(st.session_state.roster_dates):
                     d_obj = r_data['Date']
                     spec = RosterDateSpec(d_obj, r_data['HC'], r_data['Combined'], r_data['Notes'])
-                    d_str_key = str(d_obj) # Matches YYYY-MM-DD
+                    d_str_key = str(d_obj)
                     unavailable_today = unavailable_by_date_str.get(d_str_key, [])
                     
                     current_crew = []
@@ -359,47 +354,34 @@ def main():
                         "Additional Details": spec.display_details
                     }
                     
-                    # Assign Roles
                     for role_conf in CONFIG.ROLES:
                         person = temp_engine.get_tech_candidate(role_conf['key'], unavailable_today, current_crew, idx)
                         date_entry[role_conf['label']] = person
                         if person: current_crew.append(person)
                     
-                    # Manual placeholder (Cam 2)
                     date_entry["Cam 2"] = "" 
-                    
-                    # Assign Lead
                     t_lead = temp_engine.assign_lead(current_crew, unavailable_today, idx)
                     date_entry["Team Lead"] = t_lead
                     
                     temp_schedule.append(date_entry)
                     temp_engine.prev_week_crew = current_crew
                 
-                # --- CALCULATE FAIRNESS SCORE ---
-                # We calculate the Standard Deviation of "Tech Shifts". 
-                # Lower Std Dev means everyone has roughly the same amount of work.
+                # Fairness Check
                 stats_df = temp_engine.get_stats()
-                
                 if not stats_df.empty:
-                    # Calculate variance of shifts
                     current_std = stats_df['Total (Tech Only)'].std()
-                    
-                    # Tie-breaker: If variance is lower, OR equal but maybe lead shifts balanced better...
-                    # For now, strict lowest Tech Shift Variance wins.
                     if current_std < min_std_dev:
                         min_std_dev = current_std
                         best_schedule = temp_schedule
                         best_stats = stats_df
-                        best_engine = temp_engine
                 else:
-                    # Fallback if empty (shouldn't happen)
                     best_schedule = temp_schedule
                     best_stats = stats_df
 
-        # 3. DISPLAY RESULTS (Using the best found schedule)
+        # 3. DISPLAY RESULTS
         df_schedule = pd.DataFrame(best_schedule)
         
-        # Transpose logic for display
+        # Transpose Logic
         col_headers = df_schedule['Service Dates'].tolist()
         df_for_t = df_schedule.drop(columns=['Service Dates', '_full_date'])
         
@@ -411,7 +393,8 @@ def main():
         ]
         df_final_master = df_transposed.reindex(desired_order).fillna("")
 
-        # Display Grouped by Month
+        # --- THIS IS THE FIXED PART ---
+        # Display Grouped by Month using ST.TABLE (Copyable)
         dates_by_month = defaultdict(list)
         for entry in best_schedule:
             d_obj = entry['_full_date']
@@ -423,10 +406,12 @@ def main():
             st.subheader(month_name)
             valid_cols = [c for c in col_names if c in df_final_master.columns]
             if valid_cols:
-                st.dataframe(df_final_master[valid_cols], use_container_width=True)
+                # st.table renders a static table where you can select headers + rows easily
+                st.table(df_final_master[valid_cols]) 
 
         with st.expander("Show Load Statistics (Optimized)", expanded=True):
             if not best_stats.empty:
+                # Keep stats as dataframe for sorting capability, or switch to table if you want to copy this too
                 st.dataframe(best_stats, use_container_width=True)
             else:
                 st.write("No stats available.")
@@ -442,6 +427,3 @@ def main():
                 st.session_state.roster_dates = []
                 st.session_state.unavailability_by_person = {}
                 st.rerun()
-
-if __name__ == "__main__":
-    main()
