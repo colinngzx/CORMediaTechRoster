@@ -293,54 +293,76 @@ def render_step_1_dates():
         st.session_state.stage = 2
         st.rerun()
 
+import pandas as pd # Ensure pandas is imported at the top of your script
+
 def render_step_2_details():
-    st.subheader("2. Manage Service Dates & Details")
-    st.info("You can ADD or DELETE rows below. Mark special services as needed.")
+    st.subheader("2. Review Dates")
     
-    # We use data_editor with num_rows="dynamic" to allow adding/deleting
-    edited_df = st.data_editor(
-        st.session_state.event_details,
-        column_config={
-            "Date": st.column_config.DateColumn(
-                "Date", 
-                format="DD MMM YYYY", 
-                required=True,
-                help="Double-click to change date"
-            ),
-            "Holy Communion": st.column_config.CheckboxColumn("Holy Communion", default=False),
-            "Combined": st.column_config.CheckboxColumn("Combined Service", default=False),
-            "Notes": st.column_config.TextColumn("Notes", default=""),
-        },
-        hide_index=True,
-        use_container_width=True,
-        num_rows="dynamic", # <--- THIS ENABLES ADD/REMOVE
-        height=400
-    )
+    # 1. SHOW CURRENT DATES (Read-Only Table)
+    current_df = st.session_state.event_details.copy()
     
-    # Save edits to session state immediately
-    st.session_state.event_details = edited_df
+    # Format the Date column for display purposes
+    display_df = current_df.copy()
+    display_df["Date"] = display_df["Date"].dt.strftime('%a, %d %b')
+    
+    st.table(display_df[["Date", "Holy Communion", "Combined", "Notes"]])
+
+    st.divider()
+
+    # 2. ADD / REMOVE CONTROLS
+    st.write("### Modify Dates")
+    c1, c2 = st.columns(2)
+
+    # --- ADD DATE SECTION ---
+    with c1:
+        st.write("**Add a new date**")
+        new_date_input = st.date_input("Select date to add", value=None)
+        if st.button("➕ Add Date"):
+            if new_date_input:
+                # Check if date already exists
+                new_date_ts = pd.Timestamp(new_date_input)
+                if new_date_ts not in st.session_state.event_details["Date"].values:
+                    # Create a new row
+                    new_row = pd.DataFrame([{
+                        "Date": new_date_ts,
+                        "Holy Communion": False,
+                        "Combined": False,
+                        "Notes": ""
+                    }])
+                    # Append and Sort
+                    st.session_state.event_details = pd.concat([st.session_state.event_details, new_row], ignore_index=True)
+                    st.session_state.event_details = st.session_state.event_details.sort_values(by="Date").reset_index(drop=True)
+                    st.rerun()
+                else:
+                    st.warning("That date is already in the list.")
+
+    # --- REMOVE DATE SECTION (Drop Down) ---
+    with c2:
+        st.write("**Remove dates**")
+        # specific drop down to select dates to remove
+        dates_list = st.session_state.event_details["Date"].dt.strftime('%a, %d %b %Y').tolist()
+        dates_to_remove = st.multiselect("Select dates to remove", options=dates_list)
+        
+        if st.button("🗑️ Remove Selected"):
+            if dates_to_remove:
+                # Convert string selections back to Timestamp matching to filter
+                # We do a simple filter: Keep rows where formatted string is NOT in the removal list
+                mask = ~st.session_state.event_details["Date"].dt.strftime('%a, %d %b %Y').isin(dates_to_remove)
+                st.session_state.event_details = st.session_state.event_details[mask].reset_index(drop=True)
+                st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 5])
     
-    if c1.button("⬅ Back"):
+    # 3. NAVIGATION BUTTONS
+    col_back, col_next = st.columns([1, 5])
+    
+    if col_back.button("⬅ Back"):
         st.session_state.stage = 1
         st.rerun()
         
-    if c2.button("Next: Availability ➡️", type="primary"):
-        # VALIDATION: Remove rows where Date might be empty/NaT if user messed up
-        clean_df = st.session_state.event_details.dropna(subset=['Date'])
-        
-        # Ensure booleans are False, not NaN (happens when adding new rows)
-        clean_df['Holy Communion'] = clean_df['Holy Communion'].fillna(False)
-        clean_df['Combined'] = clean_df['Combined'].fillna(False)
-        clean_df['Notes'] = clean_df['Notes'].fillna("")
-        
-        # Update State and Sync Dates
-        st.session_state.event_details = clean_df
-        # We must sync the master list of dates for the next step (Availability)
-        st.session_state.roster_dates = clean_df['Date'].tolist()
-        
+    if col_next.button("Confirm & Continue ➡️", type="primary"):
+        # Update the master list of dates for the next step
+        st.session_state.roster_dates = st.session_state.event_details['Date'].tolist()
         st.session_state.stage = 3
         st.rerun()
 
