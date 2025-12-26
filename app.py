@@ -232,33 +232,34 @@ elif st.session_state.stage == 4:
         rerun_script()
 
 # ==========================================
-# STAGE 5: INTELLIGENT GENERATION & OUTPUT
+# STAGE 5: INTELLIGENT GENERATION & HORIZONTAL OUTPUT
 # ==========================================
 elif st.session_state.stage == 5:
     st.header("Stage 5: Final Roster")
-    st.info("Generating roster matching your screenshot format...")
+    st.info("Generating roster with dates as columns...")
     
-    # --- LOGIC SETUP ---
+    # 1. Initialize logic counters
     shift_counts = {name: 0 for name in all_team_names}
     previous_week_workers = []
     
-    # Roles in the specific order of the screenshot
+    # Define roles in specific order for top-to-bottom rows
     roles_processing_order = [
          ("Sound Crew", "sound"),
          ("Projectionist", "projection"),
          ("Stream Director", "stream"),
          ("Cam 1", "camera"),
-         ("Team Lead", "team lead")
+         ("Team Lead", "team lead") 
     ]
     
     final_results = []
     
     sort_dates = st.session_state.event_details.sort_values(by="Date")
     
+    # 2. Loop through Dates (Columns)
     for _, row in sort_dates.iterrows():
         current_date_obj = row['Date']
         
-        # Info String
+        # Determine Labels
         info_parts = []
         if row['Holy Communion']: info_parts.append("HC")
         if row['Combined Service']: info_parts.append("Combined")
@@ -266,18 +267,19 @@ elif st.session_state.stage == 5:
         if row['Notes']: info_parts.append(f"({row['Notes']})")
         
         away_today = st.session_state.unavailability.get(current_date_obj, [])
-        working_today = [] # People assigned to THIS Sunday
+        working_today = [] 
         
-        # Dictionary keys match the Screenshot Labels exactly
+        # Build dictionary for this single date column
+        # Keys match the Row Labels we want
         day_roster = {
-            "Service Dates": current_date_obj.strftime("%d-%b"),
+            "Service Dates": current_date_obj.strftime("%d-%b-%Y"), # This becomes header later
             "Additional Details": " ".join(info_parts),
+            "Cam 2": "" # Explicitly empty
         }
         
-        # Fill Roles
         for role_label, search_keyword in roles_processing_order:
             
-            # 1. Start Pool
+            # --- FIND CANDIDATES ---
             if role_label == "Team Lead":
                 if 'team lead' in team_df.columns:
                     base_candidates = team_df[
@@ -286,7 +288,7 @@ elif st.session_state.stage == 5:
                 else:
                     base_candidates = []
                 
-                # Exclude Darrell initially
+                # Logic: Filter out Darrell initially
                 darrell_free = [x for x in base_candidates if "darrell" not in x.lower()]
                 pool = darrell_free if darrell_free else base_candidates
             else:
@@ -296,44 +298,43 @@ elif st.session_state.stage == 5:
                     team_df['role 3'].astype(str).str.contains(search_keyword, case=False)
                 ]['name'].tolist()
             
-            # 2. Availability Filter
+            # --- FILTERS ---
+            # Remove away
             valid = [p for p in pool if p not in away_today]
-            # 3. Double Duty Filter
+            # Remove already working today
             valid = [p for p in valid if p not in working_today]
-            # 4. Back-to-Back Filter
+            # Remove back-to-back
             fresh_legs = [p for p in valid if p not in previous_week_workers]
+            
             final_pool = fresh_legs if fresh_legs else valid
             
-            # 5. Team Lead Rescue (Darrell Logic)
+            # --- DARRELL BACKUP LOGIC ---
             if role_label == "Team Lead" and not final_pool:
+                 # If no one is available, check if Darrell is available (even if excluded earlier)
                  darrells = [x for x in base_candidates if "darrell" in x.lower() and x not in away_today and x not in working_today]
                  if darrells:
                      final_pool = darrells
             
-            # 6. Selection
+            # --- SELECT ---
             selected_person = "NO FILL"
             if final_pool:
                 random.shuffle(final_pool) 
                 final_pool.sort(key=lambda x: shift_counts[x])
                 selected_person = final_pool[0]
+                
                 shift_counts[selected_person] += 1
                 working_today.append(selected_person)
             
             day_roster[role_label] = selected_person
 
-        # Explicitly add Cam 2 (Empty) to match screenshot layout
-        day_roster["Cam 2"] = ""
-
-        # Update History
         previous_week_workers = working_today
         final_results.append(day_roster)
 
-    # --- DATAFRAME CONSTRUCTION ---
+    # 3. Create DataFrame & Transpose
     raw_df = pd.DataFrame(final_results)
     
-    # Reorder columns to match screenshot strictly
-    desired_order = [
-        "Service Dates", 
+    # We want these exact Rows in this order
+    desired_row_order = [
         "Additional Details", 
         "Sound Crew", 
         "Projectionist", 
@@ -343,30 +344,27 @@ elif st.session_state.stage == 5:
         "Team Lead"
     ]
     
-    # Ensure all columns exist
-    for col in desired_order:
-        if col not in raw_df.columns:
-            raw_df[col] = ""
-            
-    raw_df = raw_df[desired_order]
-    
-    # --- TRANSPOSE (FLIP) TO MATCH SCREENSHOT ---
-    # Transposing puts Dates as Columns, Roles as Rows
-    final_transposed = raw_df.set_index("Service Dates").T
-    
-    # Insert "Additional Details" label into the index properly if needed, 
-    # but the transpose puts index as headers. 
-    # Let's reset index so "Roles" is column 1
-    final_output = final_transposed.reset_index()
-    final_output.rename(columns={"index": "Role / Detail"}, inplace=True)
+    # Set Date as Index -> Transpose -> Date becomes Header
+    if "Service Dates" in raw_df.columns:
+        transposed_df = raw_df.set_index("Service Dates").T
+        
+        # Sort/Filter Rows to match desired order
+        # (The transpose creates an index of "Additional Details", "Sound Crew", etc.)
+        transposed_df = transposed_df.reindex(desired_row_order)
+    else:
+        transposed_df = pd.DataFrame()
+
+    # Reset Index so the Row Names correspond to a clean column (for display/CSV)
+    final_output = transposed_df.reset_index()
+    final_output.rename(columns={"index": "Role"}, inplace=True)
 
     # --- DISPLAY & EXPORT ---
-    st.success("Roster Generated!")
+    st.success("Roster Generated Successfully!")
     
-    st.write("### 📅 Final Roster Layout")
-    st.dataframe(final_output, use_container_width=True, height=500)
+    st.write("### 📅 Final Schedule")
+    st.dataframe(final_output, use_container_width=True, height=600)
     
-    st.write("### 📊 Workload Stats")
+    st.write("### 📊 Distribution Stats")
     stats_df = pd.DataFrame(list(shift_counts.items()), columns=["Name", "Shifts"])
     stats_df = stats_df[stats_df['Shifts'] > 0].sort_values(by="Shifts", ascending=False)
     st.dataframe(stats_df.T, use_container_width=True)
@@ -377,9 +375,9 @@ elif st.session_state.stage == 5:
     colA, colB = st.columns(2)
     with colA:
         st.download_button(
-            label="💾 Download CSV (Screenshot Layout)",
+            label="💾 Download Horizontal CSV",
             data=csv_buffer.getvalue(),
-            file_name="sws_roster_horizontal.csv",
+            file_name="roster_horizontal.csv",
             mime="text/csv"
         )
     with colB:
