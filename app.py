@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import random
 import calendar
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from collections import defaultdict
-from typing import List, Dict, Tuple, Optional, Any
-from dataclasses import dataclass, field
+from typing import List, Dict, Tuple
+from dataclasses import dataclass
 
 # ==========================================
 # 1. CONFIGURATION & STYLES
@@ -84,7 +84,6 @@ class SessionManager:
             'roster_dates': [],
             'unavailability_by_person': {},
             'master_roster_df': None,
-            'data_cache_time': datetime.now()
         }
         for key, val in defaults.items():
             if key not in st.session_state:
@@ -93,10 +92,8 @@ class SessionManager:
     @staticmethod
     def reset():
         """Hard reset of the app state."""
-        keys_to_keep = ['data_cache_time'] # Optional: keep cache
         for key in list(st.session_state.keys()):
-            if key not in keys_to_keep:
-                del st.session_state[key]
+            del st.session_state[key]
         SessionManager.init()
 
 
@@ -380,7 +377,7 @@ def render_step_3_unavailability(all_names: List[str]):
             with cols[i % 3]:
                 # Recover previous selections
                 current_vals = st.session_state.unavailability_by_person.get(name, [])
-                # Ensure values still exist in current date range
+                # Ensure values still exist in current date range (cleanup stale dates)
                 valid_vals = [v for v in current_vals if v in date_strs]
                 
                 selected = st.multiselect(
@@ -394,10 +391,8 @@ def render_step_3_unavailability(all_names: List[str]):
         submitted = st.form_submit_button("Generate Roster", type="primary")
         if submitted:
             st.session_state.unavailability_by_person = temp_selections
-            session_state_keys_to_clear = ['master_roster_df']
-            for k in session_state_keys_to_clear:
-                if k in st.session_state: del st.session_state[k]
-                
+            # Clear previous roster to force regeneration
+            st.session_state.master_roster_df = None
             st.session_state.stage = 4
             st.rerun()
 
@@ -408,6 +403,14 @@ def render_step_3_unavailability(all_names: List[str]):
 def render_step_4_final(people_df: pd.DataFrame):
     st.header("Step 4: Roster Dashboard")
     
+    # === [FIX] SELF-HEALING STATE === 
+    # This block fixes the KeyError by detecting old versions of the data
+    # and clearing them if the columns don't match the new code needs.
+    if st.session_state.master_roster_df is not None:
+        if '_month' not in st.session_state.master_roster_df.columns:
+            st.session_state.master_roster_df = None
+    # ===============================
+
     # --- 1. GENERATION LOGIC (Run once) ---
     if st.session_state.master_roster_df is None:
         engine = RosterEngine(people_df)
@@ -421,9 +424,16 @@ def render_step_4_final(people_df: pd.DataFrame):
         roster_rows = []
         
         for idx, date_meta in enumerate(st.session_state.roster_dates):
-            d_obj = date_meta['Date']
-            if not d_obj: continue
+            d_raw = date_meta.get('Date')
+            if not d_raw: continue
             
+            # Ensure Date Object (Handle cases where it became string)
+            if isinstance(d_raw, str):
+                try: d_obj = datetime.strptime(d_raw, "%Y-%m-%d").date()
+                except: d_obj = pd.to_datetime(d_raw).date()
+            else:
+                d_obj = d_raw
+
             # Format Details string
             details_parts = []
             if date_meta.get('Combined'): details_parts.append("Combined")
@@ -456,10 +466,23 @@ def render_step_4_final(people_df: pd.DataFrame):
             
             roster_rows.append(row_data)
             engine.prev_week_crew = current_crew # Track for next iteration
-            
-        st.session_state.master_roster_df = pd.DataFrame(roster_rows)
+        
+        # Initialize DataFrame
+        if roster_rows:
+            st.session_state.master_roster_df = pd.DataFrame(roster_rows)
+        else:
+            # Fallback for empty list to prevent KeyErrors
+            st.session_state.master_roster_df = pd.DataFrame(
+                columns=["Service Date", "_month", "Details", "Team Lead", "Cam 2"]
+            )
 
     master_df = st.session_state.master_roster_df
+
+    # Safety check if empty DF was generated
+    if master_df.empty:
+        st.warning("No dates found to roster. Please go back to Step 1.")
+        if st.button("Start Over"): SessionManager.reset(); st.rerun()
+        return
 
     # --- 2. EDITING INTERFACE ---
     row_order = ["Details"] + [r['label'] for r in CONFIG.ROLES] + ["Cam 2", "Team Lead"]
@@ -469,7 +492,11 @@ def render_step_4_final(people_df: pd.DataFrame):
     has_edits = False
     
     # Process each month separately
-    months = master_df['_month'].unique()
+    if '_month' in master_df.columns:
+        months = master_df['_month'].unique()
+    else:
+        months = []
+
     for month in months:
         with st.expander(f"Edit {month}", expanded=True):
             # 1. Filter Month
