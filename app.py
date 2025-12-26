@@ -25,8 +25,8 @@ def get_data():
 
 try:
     team_df, unavail_df = get_data()
-except Exception:
-    st.error("Connection Error. Check your secrets!")
+except Exception as e:
+    st.error(f"Detailed Error: {e}")
     st.stop()
 
 # --- INIT SESSION STATE ---
