@@ -465,27 +465,41 @@ def main():
                 st.rerun()
 
         with c3:
-            # === NEW CSV TRANSFORMATION LOGIC ===
-            # We must transpose the dataframe to match the UI visual (Dates as Header, Roles as Rows)
-            # 1. Set Date as index, 2. Keep only specific columns, 3. Transpose
+            # === CSV GENERATION LOGIC: STACKED MONTHS ===
+            csv_stack = []
             
-            export_df = master_df.copy()
-            if "Service Date" in export_df.columns:
-                export_df = export_df.set_index("Service Date")
+            # 1. Identify unique months in order
+            months_ordered = master_df['_month_group'].unique()
             
-            # Filter to just the exact rows we view in the UI
-            valid_cols = [c for c in display_rows_order if c in export_df.columns]
-            export_df = export_df[valid_cols]
-            
-            # Flip it (Transpose) so Roles are on Left, Dates are on Top
-            final_csv_df = export_df.T
-            
-            csv_data = final_csv_df.to_csv(header=True).encode('utf-8')
+            for m in months_ordered:
+                # 2. Extract specific month
+                sub = master_df[master_df['_month_group'] == m].copy()
+                
+                if "Service Date" in sub.columns:
+                    sub = sub.set_index("Service Date")
+                
+                # 3. Filter only the relevant rows (UI columns)
+                valid_cols = [c for c in display_rows_order if c in sub.columns]
+                sub = sub[valid_cols]
+                
+                # 4. Transpose
+                t_sub = sub.T
+                
+                # 5. Label the top-left corner "Service Dates" 
+                # (When transposed, the Index Name becomes the top-left cell in to_csv)
+                t_sub.index.name = "Service Dates"
+                
+                # 6. Convert to CSV string, retain headers
+                chunk = t_sub.to_csv(header=True)
+                csv_stack.append(chunk)
+
+            # 7. Join all chunks with a newline in between to create "Blocks"
+            final_csv_string = "\n".join(csv_stack)
             
             st.download_button(
                 label="💾 Download CSV", 
-                data=csv_data, 
-                file_name="roster_horizontal.csv", 
+                data=final_csv_string.encode('utf-8'), 
+                file_name="roster_stacked.csv", 
                 mime="text/csv", 
                 type="primary", 
                 use_container_width=True
