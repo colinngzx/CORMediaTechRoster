@@ -3,6 +3,7 @@ import pandas as pd
 import random
 import calendar
 from datetime import datetime, date
+import io
 
 # --- CONFIG ---
 st.set_page_config(page_title="SWS Roster Wizard", page_icon="🧙‍♂️", layout="wide")
@@ -78,7 +79,7 @@ if st.session_state.stage == 1:
                     if dt.weekday() == 6: 
                         generated_dates.append(dt)
             
-            # Sort them chronologically in case user selected "Feb" then "Jan"
+            # Sort them chronologically
             generated_dates.sort()
             
             st.session_state.roster_dates = generated_dates
@@ -115,9 +116,11 @@ elif st.session_state.stage == 2:
         st.rerun()
     if col2.button("Next: Event Details ➡️"):
         # Initialize the DataFrame for the next step
+        # Updated Structure: Date | HC (bool) | Combined (bool) | Notes (str)
         data = {
             "Date": st.session_state.roster_dates,
-            "Service Type": ["Normal"] * len(st.session_state.roster_dates), # Normal, HC, MSS
+            "Holy Communion": [False] * len(st.session_state.roster_dates),
+            "Combined Service": [False] * len(st.session_state.roster_dates),
             "Notes": [""] * len(st.session_state.roster_dates)
         }
         st.session_state.event_details = pd.DataFrame(data)
@@ -125,25 +128,19 @@ elif st.session_state.stage == 2:
         st.rerun()
 
 # ==========================================
-# STAGE 3: EVENT DETAILS (HC / MSS / NOTES)
+# STAGE 3: EVENT DETAILS (HC / COMBINED / NOTES)
 # ==========================================
 elif st.session_state.stage == 3:
     st.header("Stage 3: Service Details")
-    st.info("Configure Holy Communion, Combined Services, or special notes.")
+    st.info("Check the boxes for Holy Communion or Combined Services.")
     
     # Editable Table
-    # We use a column config to make "Service Type" a dropdown
     edited_df = st.data_editor(
         st.session_state.event_details,
         column_config={
             "Date": st.column_config.DateColumn("Date", format="DD MMM YYYY", disabled=True),
-            "Service Type": st.column_config.SelectboxColumn(
-                "Type",
-                options=["Normal", "Holy Communion", "Combined (MSS)"],
-                default="Normal",
-                required=True,
-                width="medium"
-            ),
+            "Holy Communion": st.column_config.CheckboxColumn("Holy Communion?", default=False),
+            "Combined Service": st.column_config.CheckboxColumn("Combined (MSS)?", default=False),
             "Notes": st.column_config.TextColumn("Custom Notes", width="large")
         },
         hide_index=True,
@@ -173,8 +170,17 @@ elif st.session_state.stage == 4:
     # Loop through dates and create a multiselect for each
     for index, row in st.session_state.event_details.iterrows():
         d_str = row['Date'].strftime("%d-%b")
+        
+        # Build a label based on checkboxes
+        type_parts = []
+        if row['Holy Communion']: type_parts.append("HC")
+        if row['Combined Service']: type_parts.append("Combined")
+        if not type_parts: type_parts.append("Normal")
+        
+        type_label = "/".join(type_parts)
+        
         note = row['Notes']
-        label = f"{d_str} ({row['Service Type']})"
+        label = f"{d_str} ({type_label})"
         if note:
             label += f" - {note}"
             
@@ -216,8 +222,16 @@ elif st.session_state.stage == 5:
     
     for _, row in st.session_state.event_details.iterrows():
         current_date = row['Date']
-        s_type = row['Service Type']
-        notes = row['Notes']
+        
+        # Construct Service Info string
+        info_parts = []
+        if row['Holy Communion']: info_parts.append("HC")
+        if row['Combined Service']: info_parts.append("Combined")
+        if not info_parts: info_parts.append("Normal")
+        
+        if row['Notes']: info_parts.append(f"({row['Notes']})")
+        
+        service_info = " ".join(info_parts)
         
         # Who is away this specific date?
         away_today = st.session_state.unavailability.get(current_date, [])
@@ -225,7 +239,7 @@ elif st.session_state.stage == 5:
         
         day_roster = {
             "Date": current_date.strftime("%d-%b-%Y"),
-            "Service Info": f"{s_type} {notes}".strip()
+            "Service Info": service_info
         }
         
         for role_label, search_keyword in roles_config:
@@ -270,30 +284,3 @@ elif st.session_state.stage == 5:
                 working_today.append(pick)
             else:
                 day_roster[role_label] = "NO FILL"
-        
-        final_results.append(day_roster)
-
-    # Convert to DataFrame
-    final_df = pd.DataFrame(final_results)
-    
-    # Display
-    st.success("Roster Generated!")
-    edited_final = st.data_editor(final_df, use_container_width=True, height=600)
-    
-    st.write("### Actions")
-    
-    # Generate CSV for download
-    csv_buffer = io.BytesIO()
-    edited_final.to_csv(csv_buffer, index=False)
-    
-    st.download_button(
-        label="💾 Download CSV (for Excel/Google Sheets)",
-        data=csv_buffer.getvalue(),
-        file_name="roster_final.csv",
-        mime="text/csv"
-    )
-    
-    if st.button("🔄 Start Over"):
-        st.session_state.stage = 1
-        st.session_state.roster_dates = []
-        st.rerun()
