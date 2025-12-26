@@ -1,0 +1,7 @@
+[theme]
+base="light"
+primaryColor="#007AFF"          # Apple Blue
+backgroundColor="#FFFFFF"       # Pure White
+secondaryBackgroundColor="#F5F5F7" # Light Grey (like Mac Settings background)
+textColor="#1d1d1f"             # Soft Black
+font="sans serif"
