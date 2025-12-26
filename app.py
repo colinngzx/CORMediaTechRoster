@@ -47,7 +47,8 @@ class RosterDateSpec(NamedTuple):
         parts = []
         if self.is_combined: parts.append("MSS Combined")
         if self.is_hc: parts.append("HC")
-        return " / ".join(parts) if parts else ""
+        if self.notes: parts.append(self.notes)
+        return " / ".join(parts) if parts else "Regular SWS"
 
 class DateUtils:
     @staticmethod
@@ -313,12 +314,17 @@ def main():
             st.session_state.stage = 2
             st.rerun()
 
-    # --- STEP 4: FINAL ROSTER (EDITABLE & VERTICAL) ---
+    # --- STEP 4: FINAL ROSTER (TRANSPOSED VIEW) ---
     elif st.session_state.stage == 4:
-        st.header("Step 4: Final Roster")
-        st.info("💡 **Tip:** Click any cell to pick a name from the list. The stats update instantly.")
+        st.header("Step 4: Roster Review")
+        
+        # Sidebar for Names Reference since Dropdowns aren't supported in transposed view
+        with st.sidebar:
+            st.info("📝 **Name List Reference**")
+            st.caption("Copy-paste names if needed:")
+            st.code("\n".join(all_names), language="text")
 
-        # 1. GENERATE ROSTER ONCE
+        # 1. GENERATE ROSTER ONCE (Stored as Row=Date)
         if 'master_roster_df' not in st.session_state:
             unavailable_by_date_str = defaultdict(list)
             for name, unavailable_dates in st.session_state.unavailability_by_person.items():
@@ -340,7 +346,7 @@ def main():
                     "Service Date": d_obj.strftime("%d-%b"), 
                     "_month_group": d_obj.strftime("%B %Y"),
                     "Details": spec.service_type_details, 
-                    "Notes": spec.notes 
+                    # "Notes": spec.notes # Combined into Details for the view
                 }
                 
                 # Assign Roles
@@ -359,32 +365,24 @@ def main():
                 engine.prev_week_crew = current_crew
 
             df_schedule = pd.DataFrame(raw_schedule)
-            
-            # Reorder columns explicitly
-            cols_order = ["Service Date", "Details", "Notes", "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead", "_month_group"]
-            st.session_state.master_roster_df = df_schedule.reindex(columns=cols_order, fill_value="")
+            st.session_state.master_roster_df = df_schedule
 
-        # 2. HELPER: LIVE STATS (Robust Case-Insensitive)
+        # 2. HELPER: STATS
         def recalculate_live_stats(current_df, all_team_members):
             tech_roles = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]
             lead_roles = ["Team Lead"]
             
-            # Map lowercase to proper case for clean count
             name_map = {n.lower().strip(): n for n in all_team_members}
             stats = {name: {'Tech': 0, 'Lead': 0} for name in all_team_members}
             
-            # Scan columns
             for col in current_df.columns:
-                is_tech = col in tech_roles
-                is_lead = col in lead_roles
-                
-                if is_tech or is_lead:
+                if col in tech_roles or col in lead_roles:
                     for val in current_df[col]:
                         val_str = str(val).strip().lower()
                         if val_str in name_map:
                             real_name = name_map[val_str]
-                            if is_tech: stats[real_name]['Tech'] += 1
-                            if is_lead: stats[real_name]['Lead'] += 1
+                            if col in tech_roles: stats[real_name]['Tech'] += 1
+                            if col in lead_roles: stats[real_name]['Lead'] += 1
 
             data_out = []
             for name, counts in stats.items():
@@ -399,65 +397,72 @@ def main():
             if not data_out: return pd.DataFrame(columns=["Name", "Total"])
             return pd.DataFrame(data_out).sort_values("Name")
 
-        # 3. CONFIGURE DROPDOWNS
-        column_configuration = {
-            "Service Date": st.column_config.TextColumn("Date", disabled=True),
-            "Details": st.column_config.TextColumn("Info", disabled=True),
-            "Notes": st.column_config.TextColumn("Notes"),
-            # FIX: Use None to hide a column instead of the invalid Column(hidden=True)
-            "_month_group": None 
-        }
-        
-        # Add Dropdown config for all role columns
-        roles_to_dropdown = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead"]
-        for r in roles_to_dropdown:
-            column_configuration[r] = st.column_config.SelectboxColumn(
-                r,
-                options=all_names,
-                required=False
-            )
-
-        # 4. DISPLAY EDITABLE TABLES BY MONTH
+        # 3. DISPLAY LOGIC (Rotated View)
         master_df = st.session_state.master_roster_df
-        unique_months = master_df['_month_group'].unique()
         
-        edited_master = master_df.copy()
+        # Ensure define row order for the display
+        display_rows_order = ["Details", "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead"]
+        
+        unique_months = master_df['_month_group'].unique()
         has_changes = False
 
         for month in unique_months:
             st.subheader(month)
-            month_mask = master_df['_month_group'] == month
-            month_subset = master_df[month_mask]
             
-            # THE EDITOR WITH DROPDOWNS
-            edited_subset = st.data_editor(
-                month_subset,
-                column_config=column_configuration,
+            # Extract month data
+            month_mask = master_df['_month_group'] == month
+            month_subset = master_df[month_mask].copy()
+            
+            # --- TRANSPOSE LOGIC ---
+            # 1. Set Date as Index
+            month_subset = month_subset.set_index("Service Date")
+            
+            # 2. Select only the columns we want as rows
+            view_subset = month_subset[display_rows_order]
+            
+            # 3. Transpose: Now Index=Roles, Columns=Dates
+            transposed_view = view_subset.T
+            
+            # 4. Display Editor strings only (Note: Dropdowns not possible in mixed-type transposed view)
+            edited_transposed = st.data_editor(
+                transposed_view,
                 use_container_width=True,
-                hide_index=True,
                 key=f"editor_{month}"
             )
             
-            # Sync edits back to master
-            if not edited_subset.equals(month_subset):
-                # Update the master dataframe at the specific indices
-                edited_master.loc[month_mask] = edited_subset
+            # --- SYNC BACK LOGIC ---
+            # If changed, rotate back and update master
+            if not edited_transposed.equals(transposed_view):
+                # Rotate back: Index=Date, Columns=Roles
+                reverted_df = edited_transposed.T.reset_index()
+                
+                # Update specific rows in master_df based on Date matching
+                for _, row in reverted_df.iterrows():
+                    d_val = row['Service Date']
+                    # Find index in master where Service Date matches
+                    idx_in_master = master_df.index[master_df['Service Date'] == d_val]
+                    if not idx_in_master.empty:
+                        idx = idx_in_master[0]
+                        for col in display_rows_order:
+                            master_df.at[idx, col] = row[col]
                 has_changes = True
 
         if has_changes:
-            st.session_state.master_roster_df = edited_master
-            # Rerun so stats update immediately
+            st.session_state.master_roster_df = master_df
             st.rerun()
 
-        # 5. DISPLAY REAL-TIME STATS
+        # 4. STATS & DOWNLOAD (Based on the internal Master DF)
         st.markdown("---")
         with st.expander("📊 Live Load Statistics", expanded=True):
-            live_stats = recalculate_live_stats(edited_master, all_names)
+            live_stats = recalculate_live_stats(master_df, all_names)
             st.dataframe(live_stats, use_container_width=True)
 
-        # 6. DOWNLOAD / RESET
         st.markdown("---")
-        csv = edited_master.drop(columns=['_month_group']).to_csv(index=False).encode('utf-8')
+        
+        # For download, we probably want the Rotated view as CSV?
+        # Let's create a full rotated CSV for the user
+        full_rotated = master_df.set_index("Service Date")[display_rows_order].T
+        csv = full_rotated.to_csv().encode('utf-8')
         
         c1, c2 = st.columns(2)
         with c1: 
