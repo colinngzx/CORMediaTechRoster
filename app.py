@@ -8,25 +8,35 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="SWS Matrix Roster", page_icon="📅", layout="wide")
 st.title("📅 Church Roster: Matrix View")
 
-# Connect to Google Sheet
+# --- DIRECT CONNECTION SETUP ---
+# We represent the connection object but put the URL directly here to avoid Secrets errors
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def get_data():
-    # Load data as strings
-    team_df = conn.read(worksheet="Team", ttl=0).astype(str)
-    try:
-        unavail_df = conn.read(worksheet="Unavailability", ttl=0).astype(str)
-    except:
-        # If Unavailability tab is empty/missing, create empty structure
-        unavail_df = pd.DataFrame(columns=["Name", "Date"])
-        
-    team_df = team_df.fillna("")
-    return team_df, unavail_df
+# YOUR PUBLIC SHEET URL
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo/edit?usp=sharing"
 
-try:
-    team_df, unavail_df = get_data()
-except Exception as e:
-    st.error(f"Detailed Error: {e}")
+def get_data():
+    # We pass the URL directly to the read function
+    try:
+        team_df = conn.read(spreadsheet=SHEET_URL, worksheet="Team", ttl=0).astype(str)
+        # Check if Unavailability exists, otherwise make empty
+        try:
+            unavail_df = conn.read(spreadsheet=SHEET_URL, worksheet="Unavailability", ttl=0).astype(str)
+        except:
+            unavail_df = pd.DataFrame(columns=["Name", "Date"])
+            
+        team_df = team_df.fillna("")
+        return team_df, unavail_df
+    except Exception as e:
+        return None, None, e
+
+# Load Data
+team_df, unavail_df, error = get_data()
+
+# Error Handling
+if error:
+    st.error(f"⚠️ Could not load data. Error: {error}")
+    st.info("Troubleshooting: Make sure your Google Sheet has a tab named 'Team' and a tab named 'Unavailability'.")
     st.stop()
 
 # --- INIT SESSION STATE ---
@@ -45,8 +55,14 @@ if mode == "I am a Team Member":
     
     if st.button("Submit Unavailability"):
         new_row = pd.DataFrame([{"Name": selected_name, "Date": str(away_date)}])
-        updated_df = pd.concat([unavail_df, new_row], ignore_index=True)
-        conn.update(worksheet="Unavailability", data=updated_df)
+        
+        # Determine if we are appending to existing or starting fresh
+        if unavail_df.empty:
+            updated_df = new_row
+        else:
+            updated_df = pd.concat([unavail_df, new_row], ignore_index=True)
+            
+        conn.update(spreadsheet=SHEET_URL, worksheet="Unavailability", data=updated_df)
         st.success("Saved!")
         st.cache_data.clear()
 
@@ -62,20 +78,18 @@ elif mode == "I am the Admin":
         weeks = c2.slider("Weeks to generate", 4, 12, 8)
         
         # DEFINITIONS
-        # Tuples of ("Display Name", "Search Keyword")
         roles_config = [
             ("Sound Crew", "sound"),
             ("Projectionist", "projection"),
             ("Stream Director", "stream"),
             ("Cam 1", "camera"),
-            ("Cam 2", "camera_2_placeholder"), # Intentionally empty keyword
+            ("Cam 2", "camera_2_placeholder"), 
             ("Team Lead", "team lead") 
         ]
 
         if st.button("🚀 Generate Draft Roster", type="primary"):
-            matrix_dict = {} # Key = Role, Value = List of names
+            matrix_dict = {} 
             
-            # Initialize empty lists for rows
             for role_name, _ in roles_config:
                 matrix_dict[role_name] = []
 
@@ -88,7 +102,6 @@ elif mode == "I am the Admin":
                 date_str_full = str(current_date)
                 
                 # Check Unavailability
-                # Ensure Date column exists and compare
                 if 'Date' in unavail_df.columns:
                     away_today = unavail_df[unavail_df['Date'] == date_str_full]['Name'].tolist()
                 else:
@@ -105,7 +118,6 @@ elif mode == "I am the Admin":
 
                     # 2. TEAM LEAD (Darrell Logic)
                     elif role_label == "Team Lead":
-                        # Get EVERYONE available who marked team lead as 'yes'
                         all_candidates = team_df[
                             (team_df['team lead'].str.contains("yes", case=False)) &
                             (~team_df['Name'].isin(away_today)) &
@@ -113,14 +125,10 @@ elif mode == "I am the Admin":
                         ]['Name'].tolist()
                         
                         if all_candidates:
-                            # Filter out Darrell
                             others = [x for x in all_candidates if "darrell" not in x.lower()]
-                            
                             if others:
-                                # Pick someone else if possible
                                 candidates = others 
                             else:
-                                # Only pick Darrell if he is the ONLY one left
                                 candidates = all_candidates
                         else:
                             candidates = []
@@ -147,7 +155,7 @@ elif mode == "I am the Admin":
 
                 current_date = current_date + timedelta(days=7)
 
-            # Convert to DataFrame & Transpose
+            # Transpose
             df = pd.DataFrame(matrix_dict)
             df = df.T 
             df.columns = date_headers
@@ -167,7 +175,7 @@ elif mode == "I am the Admin":
             if st.button("💾 Save Final Roster"):
                 save_df = edited_matrix.reset_index()
                 save_df = save_df.rename(columns={"index": "Role"})
-                conn.update(worksheet="Roster", data=save_df)
+                conn.update(spreadsheet=SHEET_URL, worksheet="Roster", data=save_df)
                 st.success("✅ Roster Published!")
 
     elif password:
