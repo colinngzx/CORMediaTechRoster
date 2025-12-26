@@ -2,355 +2,485 @@ import streamlit as st
 import pandas as pd
 import random
 import calendar
-from datetime import datetime, date
 import io
-from typing import List, Tuple
+from datetime import datetime, date
+from typing import List, Dict, Optional, Tuple, NamedTuple
+from dataclasses import dataclass
 
 # ==========================================
-# 1. CONFIGURATION
+# 1. CONFIGURATION ISO (Immutable Config)
 # ==========================================
-CONFIG = {
-    "PAGE_TITLE": "SWS Roster Wizard",
-    "SHEET_ID": "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo",
-    "SHEET_NAME": "Team",
-    "ROLES": [
+
+@dataclass(frozen=True)
+class AppConfig:
+    PAGE_TITLE: str = "SWS Roster Wizard"
+    SHEET_ID: str = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
+    SHEET_NAME: str = "Team"
+    
+    # Logic Weights
+    PRIMARY_LEADS: Tuple[str, ...] = ("gavin", "ben", "mich lo")
+    DEDICATED_LEAD: str = "darrell"
+    DEPRIORITIZED_WORKER: str = "darrell"
+    
+    # Roster Roles Mapping
+    ROLES: Tuple[Dict[str, str], ...] = (
         {"label": "Sound Crew",      "key": "sound"},
         {"label": "Projectionist",   "key": "projection"},
         {"label": "Stream Director", "key": "stream"},
         {"label": "Cam 1",           "key": "camera"},
-    ],
-    # LOGIC SETTINGS
-    "PRIMARY_LEADS": ["gavin", "ben", "mich lo"], # Tier 1
-    "DEDICATED_LEAD": "darrell",                  # Tier 2
-    "DEPRIORITIZED_WORKER": "darrell"             # Avoid on tech
-}
+    )
+
+CONFIG = AppConfig()
 
 # ==========================================
-# 2. LOGIC LAYER
+# 2. DATA MODELS & UTILS
 # ==========================================
 
-class DateManager:
+class RosterDateSpec(NamedTuple):
+    """Immutable specification for a single service date."""
+    date_obj: date
+    is_hc: bool
+    is_combined: bool
+    notes: str
+
+    @property
+    def display_details(self) -> str:
+        parts = []
+        if self.is_hc: parts.append("HC")
+        if self.is_combined: parts.append("Comb")
+        if self.notes: parts.append(f"({self.notes})")
+        return " ".join(parts)
+
+class DateUtils:
     @staticmethod
-    def get_defaults() -> Tuple[int, List[str]]:
+    def get_default_window() -> Tuple[int, List[str]]:
         now = datetime.now()
-        curr_year = now.year + 1 if now.month == 12 else now.year
-        months = []
+        # Suggest next month context
+        target_year = now.year + 1 if now.month == 12 else now.year
+        suggested_months = []
         for i in range(1, 4):
-            idx = now.month + i
-            if idx > 12: idx -= 12
-            months.append(calendar.month_name[idx])
-        return curr_year, months
+            idx = (now.month + i - 1) % 12 + 1
+            suggested_months.append(calendar.month_name[idx])
+        return target_year, suggested_months
 
     @staticmethod
-    def generate_dates(year: int, month_names: List[str]) -> List[date]:
-        generated_dates = []
-        m_map = {m: i for i, m in enumerate(calendar.month_name) if m}
+    def generate_sundays(year: int, month_names: List[str]) -> List[date]:
+        """Generates a list of Sunday dates for given months/year."""
+        valid_dates = []
+        month_map = {m: i for i, m in enumerate(calendar.month_name) if m}
         today = date.today()
 
         for m_name in month_names:
-            m_idx = m_map.get(m_name)
+            m_idx = month_map.get(m_name)
             if not m_idx: continue
-            _, days = calendar.monthrange(year, m_idx)
-            for d in range(1, days + 1):
+            
+            _, days_in_month = calendar.monthrange(year, m_idx)
+            for day in range(1, days_in_month + 1):
                 try:
-                    candidate = date(year, m_idx, d)
-                    if (today - candidate).days > 180: candidate = date(year + 1, m_idx, d)
-                    if candidate.weekday() == 6: generated_dates.append(candidate)
-                except ValueError: continue
-        return sorted(generated_dates)
+                    curr = date(year, m_idx, day)
+                    # Handle year wrap-around logic if needed (simple check here)
+                    if (today - curr).days > 180: 
+                        curr = date(year + 1, m_idx, day)
+                    
+                    if curr.weekday() == 6:  # 6 = Sunday
+                        valid_dates.append(curr)
+                except ValueError:
+                    continue
+        return sorted(valid_dates)
+
+# ==========================================
+# 3. LOGIC ENGINE (The Brain)
+# ==========================================
 
 class RosterEngine:
     def __init__(self, df: pd.DataFrame):
         self.df = df
-        self.team_names = sorted(df['name'].unique().tolist())
+        # Normalize names once intended for fast lookup
+        self.team_names: List[str] = sorted(df['name'].unique().tolist())
         
-        self.tech_score = {name: 0 for name in self.team_names} 
-        self.lead_score = {name: 0 for name in self.team_names}
-        # Track the index of the week they last worked to prevent bunching
-        self.last_worked_index = {name: -999 for name in self.team_names}
-        self.history_prev_week: List[str] = []
+        # State Tracking
+        self.tech_load: Dict[str, int] = {name: 0 for name in self.team_names}
+        self.lead_load: Dict[str, int] = {name: 0 for name in self.team_names}
+        self.last_worked_idx: Dict[str, int] = {name: -999 for name in self.team_names}
+        
+        # Context of the immediate previous week (for strict rules)
+        self.prev_week_crew: List[str] = []
 
-    def get_qualified_pool(self, role_key: str, unavailable: List[str], working_today: List[str]) -> List[str]:
+    def _update_stats(self, person: str, role_type: str, week_idx: int):
+        """Updates internal load balancing counters."""
+        if role_type == "tech":
+            self.tech_load[person] = self.tech_load.get(person, 0) + 1
+        elif role_type == "lead":
+            self.lead_load[person] = self.lead_load.get(person, 0) + 1
+        
+        self.last_worked_idx[person] = week_idx
+
+    def get_tech_candidate(self, role_key: str, unavailable: List[str], current_crew: List[str], week_idx: int) -> str:
+        """Finds the best candidate for a specific tech role based on weighted attributes."""
+        # 1. Filter by Skill
         mask = (
             self.df['role 1'].str.contains(role_key, case=False, na=False) |
             self.df['role 2'].str.contains(role_key, case=False, na=False) |
             self.df['role 3'].str.contains(role_key, case=False, na=False)
         )
         candidates = self.df[mask]['name'].tolist()
-        pool = [p for p in candidates if p not in unavailable and p not in working_today]
-        # Strict "No Back-to-Back" rule
-        fresh_pool = [p for p in pool if p not in self.history_prev_week]
-        return fresh_pool if fresh_pool else pool
 
-    def pick_tech(self, pool: List[str], current_week_idx: int) -> str:
-        if not pool: return "NO FILL"
-        
-        # Shuffle first to randomize ties
-        random.shuffle(pool)
-        
-        # Sort Logic:
-        # 1. Deprioritize Darrell (1 vs 0)
-        # 2. Fewest Total Shifts
-        # 3. Longest time since last shift (Lowest Index = Oldest Shift)
-        def sort_key(person_name):
-            is_deprioritized = 1 if person_name.lower() == CONFIG["DEPRIORITIZED_WORKER"].lower() else 0
-            current_points = self.tech_score.get(person_name, 0)
-            last_idx = self.last_worked_index.get(person_name, -999)
-            return (is_deprioritized, current_points, last_idx)
+        # 2. Filter by Availability
+        available_pool = [
+            p for p in candidates 
+            if p not in unavailable 
+            and p not in current_crew 
+            and p not in self.prev_week_crew # Strict no back-to-back
+        ]
 
-        pool.sort(key=sort_key)
+        if not available_pool:
+            # Fallback: Relax back-to-back rule if absolutely necessary
+            available_pool = [
+                p for p in candidates 
+                if p not in unavailable 
+                and p not in current_crew
+            ]
+
+        if not available_pool:
+            return "NO FILL"
+
+        # 3. Weighted Sorting (The "Magic")
+        # Sort Criteria:
+        # A. Is Deprioritized? (Put at bottom)
+        # B. Total Shift Count (Ascending - give to person with least work)
+        # C. Recency (Ascending - give to person who worked longest ago (lowest index))
+        random.shuffle(available_pool) # Shuffle first to break pure ties
         
-        selected = pool[0]
-        self.tech_score[selected] += 1
-        self.last_worked_index[selected] = current_week_idx
+        def sort_strategy(name: str):
+            is_deprioritized = 1 if name.lower() == CONFIG.DEPRIORITIZED_WORKER.lower() else 0
+            load = self.tech_load.get(name, 0)
+            recency = self.last_worked_idx.get(name, -999)
+            return (is_deprioritized, load, recency)
+
+        available_pool.sort(key=sort_strategy)
+        
+        selected = available_pool[0]
+        self._update_stats(selected, "tech", week_idx)
         return selected
 
-    def assign_lead(self, working_team: List[str], unavailable_list: List[str], current_week_idx: int) -> str:
-        present_crew = [p for p in working_team if p != "NO FILL"]
-        
-        # 1. Tier 1: Primary Leads (Double Hat)
-        primary_candidates = [p for p in present_crew if p.lower() in [x.lower() for x in CONFIG["PRIMARY_LEADS"]]]
-        if primary_candidates:
-            # Sort by who has led least, then who hasn't worked tech recently
-            primary_candidates.sort(key=lambda x: (self.lead_score.get(x, 0), self.last_worked_index.get(x, 0)))
-            selected = primary_candidates[0]
-            self.lead_score[selected] += 1
+    def assign_lead(self, current_crew: List[str], unavailable: List[str], week_idx: int) -> str:
+        """Determines the Team Lead based on hierarchical tiers."""
+        crew_present = [p for p in current_crew if p != "NO FILL"]
+
+        # Tier 1: Primary Leads (Double Hatting)
+        # We prefer someone already on the team to lead
+        primaries = [p for p in crew_present if p.lower() in [x.lower() for x in CONFIG.PRIMARY_LEADS]]
+        if primaries:
+            # Pick the primary lead who has led the least
+            primaries.sort(key=lambda x: (self.lead_load.get(x, 0), self.last_worked_idx.get(x, 0)))
+            selected = primaries[0]
+            self._update_stats(selected, "lead", week_idx)
             return selected
 
-        # 2. Tier 2: Dedicated Lead (Darrell)
-        dedicated = CONFIG["DEDICATED_LEAD"]
-        is_dedicated_available = dedicated not in unavailable_list
-        if is_dedicated_available:
-            self.lead_score[dedicated] += 1
-            # Mark him active so the Recency logic knows he worked
-            self.last_worked_index[dedicated] = current_week_idx 
+        # Tier 2: Dedicated Lead Availability
+        # If no primary lead is on tech duty, check the dedicated lead (e.g., Darrell)
+        dedicated = CONFIG.DEDICATED_LEAD
+        if dedicated not in unavailable and dedicated not in crew_present:
+            self._update_stats(dedicated, "lead", week_idx)
             return dedicated
 
-        # 3. Tier 3: Fallback (Anyone authorized)
-        fallback_candidates = []
-        for person in present_crew:
+        # Tier 3: General Authorized Leads (Fallback)
+        # Check if anyone else on the current crew is authorized to lead
+        fallbacks = []
+        for person in crew_present:
             is_auth = self.df.loc[self.df['name'] == person, 'team lead'].astype(str).str.contains("yes", case=False).any()
             if is_auth:
-                fallback_candidates.append(person)
+                fallbacks.append(person)
         
-        if fallback_candidates:
-            fallback_candidates.sort(key=lambda x: self.lead_score.get(x, 0))
-            selected = fallback_candidates[0]
-            self.lead_score[selected] += 1
+        if fallbacks:
+            fallbacks.sort(key=lambda x: self.lead_load.get(x, 0))
+            selected = fallbacks[0]
+            self._update_stats(selected, "lead", week_idx)
             return selected
 
         return "⚠️ NO LEAD"
 
-    def set_previous_workers(self, workers: List[str]):
-        self.history_prev_week = workers
-
-    def get_stats(self) -> pd.DataFrame:
-        df = pd.DataFrame([
-            {"Name": k, "Shifts": v, "Lead Badge": self.lead_score.get(k, 0)} 
-            for k, v in self.tech_score.items() if (v > 0 or self.lead_score.get(k, 0) > 0)
-        ])
-        if not df.empty:
-            return df.sort_values(["Shifts", "Lead Badge"], ascending=False)
-        return pd.DataFrame()
+    def get_statistics_df(self) -> pd.DataFrame:
+        data = []
+        for name in self.team_names:
+            tech_count = self.tech_load.get(name, 0)
+            lead_count = self.lead_load.get(name, 0)
+            if tech_count > 0 or lead_count > 0:
+                data.append({"Name": name, "Tech Shifts": tech_count, "Leads": lead_count})
+        
+        if not data: return pd.DataFrame()
+        return pd.DataFrame(data).sort_values("Tech Shifts", ascending=False)
 
 # ==========================================
-# 3. UI HELPER & STYLING
+# 4. DATA ACCESS LAYER
 # ==========================================
-@st.cache_data(ttl=60)
-def fetch_data():
-    url = f"https://docs.google.com/spreadsheets/d/{CONFIG['SHEET_ID']}/gviz/tq?tqx=out:csv&sheet={CONFIG['SHEET_NAME']}"
+
+@st.cache_data(ttl=600)
+def fetch_roster_data() -> pd.DataFrame:
     try:
+        url = f"https://docs.google.com/spreadsheets/d/{CONFIG.SHEET_ID}/gviz/tq?tqx=out:csv&sheet={CONFIG.SHEET_NAME}"
         df = pd.read_csv(url).fillna("")
+        
+        # Clean Columns
         df.columns = df.columns.str.strip().str.lower()
         if 'status' in df.columns:
             df = df[(df['status'].str.lower() == 'active') | (df['status'] == '')]
-        if 'name' in df.columns: df['name'] = df['name'].str.strip()
+        if 'name' in df.columns: 
+            df['name'] = df['name'].str.strip()
+            
         return df
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Failed to fetch Google Sheet data. Error: {e}")
         return pd.DataFrame()
 
-def apply_styling():
-    # Only color the button blue. 
-    # Removed all other CSS to let browser Default Dark Mode handle text visibility.
+# ==========================================
+# 5. UI COMPONENTS (Views)
+# ==========================================
+
+def init_session_state():
+    """Centralized Session State Initialization"""
+    defaults = {
+        'stage': 1,
+        'roster_dates': [],      # List[date]
+        'event_details': pd.DataFrame(),
+        'unavailability': {},    # Dict[date_str, List[str]]
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+def apply_clean_theme():
+    # Only minimal CSS for Primary Button visibility, relying on Dark Mode otherwise
     st.markdown("""
         <style>
-        div.stButton > button[kind="primary"] { background-color: #007AFF !important; color: white !important; }
+        div.stButton > button[kind="primary"] { 
+            background-color: #007AFF !important; 
+            color: white !important;
+            border: none;
+        }
         </style>
     """, unsafe_allow_html=True)
 
+# --- Stage Renderers ---
+
+def render_step_1_dates():
+    st.subheader("1. Select Duration")
+    cur_year, cur_months = DateUtils.get_default_window()
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        year_sel = st.number_input("Year", 2024, 2030, cur_year)
+    with col2:
+        month_sel = st.multiselect("Months", calendar.month_name[1:], default=cur_months)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Generate Dates ➡️", type="primary"):
+        if not month_sel:
+            st.warning("Please select at least one month.")
+            return
+        
+        dates = DateUtils.generate_sundays(year_sel, month_sel)
+        st.session_state.roster_dates = dates
+        
+        # Pre-seed the Event Details DataFrame
+        st.session_state.event_details = pd.DataFrame({
+            "Date": dates,
+            "Holy Communion": [False] * len(dates),
+            "Combined": [False] * len(dates),
+            "Notes": [""] * len(dates)
+        })
+        
+        st.session_state.stage = 2
+        st.rerun()
+
+def render_step_2_details():
+    st.subheader("2. Service Details")
+    st.info("Mark special services (Holy Communion, Combined) or add notes.")
+    
+    edited_df = st.data_editor(
+        st.session_state.event_details,
+        column_config={
+            "Date": st.column_config.DateColumn("Date", format="DD MMM", disabled=True),
+            "Holy Communion": st.column_config.CheckboxColumn("Holy Communion", default=False),
+            "Combined": st.column_config.CheckboxColumn("Combined Service", default=False),
+        },
+        hide_index=True,
+        use_container_width=True,
+        height=400
+    )
+    st.session_state.event_details = edited_df
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 5])
+    if c1.button("⬅ Back"):
+        st.session_state.stage = 1
+        st.rerun()
+    if c2.button("Next: Availability ➡️", type="primary"):
+        st.session_state.stage = 3
+        st.rerun()
+
+def render_step_3_availability(df_team: pd.DataFrame):
+    st.subheader("3. Who is Away?")
+    st.caption("Select dates where team members are UNAVAILABLE.")
+    
+    # Create mapping for Date -> Readable String
+    date_map = {d: d.strftime("%d-%b") for d in st.session_state.roster_dates}
+    formatted_options = list(date_map.values())
+    
+    temp_unavailability = {}
+    team_names = sorted(df_team['name'].unique())
+    
+    # Grid Layout for names
+    cols = st.columns(3)
+    for idx, name in enumerate(team_names):
+        with cols[idx % 3]:
+            sel_display_dates = st.multiselect(
+                label=name, 
+                options=formatted_options,
+                key=f"ua_{name}"
+            )
+            if sel_display_dates:
+                # Convert Display Date back to Real Date Logic
+                # (Simple approach: find keys by value)
+                real_dates = [k for k, v in date_map.items() if v in sel_display_dates]
+                temp_unavailability[name] = real_dates
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 5])
+    if c1.button("⬅ Back"):
+        st.session_state.stage = 2
+        st.rerun()
+    
+    if c2.button("✨ Generate Roster ➡️", type="primary"):
+        # Invert Dictionary: stored as Date -> List[Names] for easier lookup in Engine
+        final_ua_map = {}
+        for name, dates in temp_unavailability.items():
+            for d in dates:
+                final_ua_map.setdefault(d, []).append(name)
+        
+        st.session_state.unavailability = final_ua_map
+        st.session_state.stage = 4
+        st.rerun()
+
+def render_step_4_output(df_team: pd.DataFrame):
+    st.subheader("4. Final Roster")
+    
+    engine = RosterEngine(df_team)
+    schedule_data = []
+    
+    # Process Roster Logic
+    # Sort events by date just in case
+    events_df = st.session_state.event_details.sort_values("Date")
+    
+    for week_idx, row in events_df.iterrows():
+        d_obj = row['Date'] # This is a python date object
+        ua_list = st.session_state.unavailability.get(d_obj, [])
+        
+        # Logic Loop Variables
+        todays_crew: List[str] = []
+        
+        # Build Spec
+        spec = RosterDateSpec(
+            date_obj=d_obj,
+            is_hc=row.get('Holy Communion', False),
+            is_combined=row.get('Combined', False),
+            notes=row.get('Notes', "")
+        )
+        
+        row_output = {
+            "Month": d_obj.month,
+            "Date": d_obj.strftime("%d-%b"),
+            "Details": spec.display_details
+        }
+
+        # 1. Assign Tech Roles
+        for role in CONFIG.ROLES:
+            person = engine.get_tech_candidate(role['key'], ua_list, todays_crew, week_idx)
+            if person != "NO FILL":
+                todays_crew.append(person)
+            row_output[role['label']] = person
+        
+        # 2. Assign Lead
+        lead = engine.assign_lead(todays_crew, ua_list, week_idx)
+        row_output["Team Lead"] = lead
+        
+        # 3. Update History for Next Loop
+        engine.prev_week_crew = todays_crew # Updates strictly for next iteration
+        
+        schedule_data.append(row_output)
+
+    # Rendering Results
+    final_df = pd.DataFrame(schedule_data)
+    
+    # CSV Buffer
+    csv_buff = io.StringIO()
+    
+    # Display by Month
+    cols_order = ["Date", "Details", "Team Lead"] + [r['label'] for r in CONFIG.ROLES]
+    
+    is_first_chunk = True
+    for mnth_idx, group in final_df.groupby("Month"):
+        st.markdown(f"##### {calendar.month_name[mnth_idx]}")
+        
+        # Pivot for readability (Rows = Roles, Cols = Dates)
+        display_table = group[cols_order].set_index("Date").T.reset_index().rename(columns={"index": "Role"})
+        st.dataframe(display_table, use_container_width=True, hide_index=True)
+        
+        # Add to CSV
+        if not is_first_chunk: csv_buff.write("\n")
+        display_table.to_csv(csv_buff, index=False)
+        is_first_chunk = False
+        
+    st.divider()
+    
+    # Footer Stats & Actions
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.caption("Auto-balancing Logic: Prioritizes those with fewer shifts and handles back-to-back prevention.")
+        stats = engine.get_statistics_df()
+        if not stats.empty:
+            with st.expander("View Shift Statistics"):
+                st.dataframe(stats, use_container_width=True, hide_index=True)
+
+    with c2:
+        st.download_button(
+            label="💾 Download CSV",
+            data=csv_buff.getvalue(),
+            file_name=f"roster_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            type="primary"
+        )
+        if st.button("🔄 Start Over"):
+            st.session_state.stage = 1
+            st.rerun()
+
 # ==========================================
-# 4. MAIN APP
+# 6. APP ENTRY POINT
 # ==========================================
 
 def main():
-    st.set_page_config(page_title=CONFIG["PAGE_TITLE"], layout="wide")
-    apply_styling()
+    st.set_page_config(page_title=CONFIG.PAGE_TITLE, layout="wide")
+    init_session_state()
+    apply_clean_theme()
     
-    # Session State Initialization
-    if 'stage' not in st.session_state: st.session_state.stage = 1
-    if 'roster_dates' not in st.session_state: st.session_state.roster_dates = []
-    if 'event_details' not in st.session_state: st.session_state.event_details = pd.DataFrame()
-    if 'unavailability' not in st.session_state: st.session_state.unavailability = {}
-
-    # --- SAFETY FIX FOR OLD DATA ---
-    # If your session still has old data without the 'Combined' column, this adds it automatically.
-    if not st.session_state.event_details.empty:
-        required_cols = ["Holy Communion", "Combined", "Notes"]
-        for col in required_cols:
-            if col not in st.session_state.event_details.columns:
-                if col == "Notes":
-                    st.session_state.event_details[col] = ""
-                else:
-                    st.session_state.event_details[col] = False
-    # -------------------------------
-
-    df_team = fetch_data()
-    if df_team.empty: st.stop()
-
     st.title("🧙‍♂️ Roster Wizard")
     st.markdown("---")
 
-    # STAGE 1: DATES
+    # Fetch Data
+    df_team = fetch_roster_data()
+    if df_team.empty:
+        st.error("Could not load team data. Checks logs.")
+        st.stop()
+        
+    # Routing
     if st.session_state.stage == 1:
-        st.subheader("1. Select Duration")
-        d_year, d_months = DateManager.get_defaults()
-        c1, c2 = st.columns([1, 2])
-        y = c1.number_input("Year", 2024, 2030, d_year)
-        m = c2.multiselect("Months", calendar.month_name[1:], default=d_months)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Next ➡️", type="primary"):
-            st.session_state.roster_dates = DateManager.generate_dates(y, m)
-            st.session_state.stage = 2
-            st.rerun()
-
-    # STAGE 2: REVIEW
+        render_step_1_dates()
     elif st.session_state.stage == 2:
-        st.subheader("2. Review Dates")
-        d_df = pd.DataFrame({"Dates": [d.strftime("%a, %d %b") for d in st.session_state.roster_dates]})
-        st.dataframe(d_df, hide_index=True, use_container_width=True, height=200)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Confirm & Continue ➡️", type="primary"):
-            st.session_state.event_details = pd.DataFrame({
-                "Date": st.session_state.roster_dates,
-                "Holy Communion": [False]*len(st.session_state.roster_dates),
-                "Combined": [False]*len(st.session_state.roster_dates),
-                "Notes": [""]*len(st.session_state.roster_dates)
-            })
-            st.session_state.stage = 3
-            st.rerun()
-
-    # STAGE 3: DETAILS
+        render_step_2_details()
     elif st.session_state.stage == 3:
-        st.subheader("3. Service Details")
-        st.session_state.event_details = st.data_editor(
-            st.session_state.event_details,
-            column_config={"Date": st.column_config.DateColumn("Date", format="DD MMM", disabled=True)},
-            hide_index=True, use_container_width=True
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Next ➡️", type="primary"):
-            st.session_state.stage = 4
-            st.rerun()
-
-    # STAGE 4: AVAILABILITY
+        render_step_3_availability(df_team)
     elif st.session_state.stage == 4:
-        st.subheader("4. Team Availability (Who is AWAY?)")
-        date_opts = {r['Date'].strftime("%d-%b"): r['Date'] for _, r in st.session_state.event_details.iterrows()}
-        team_ua = {}
-        
-        cols = st.columns(3)
-        team_names = sorted(df_team['name'].unique())
-        for i, name in enumerate(team_names):
-            with cols[i%3]:
-                # Labels should now be visible in default Dark Mode
-                sel = st.multiselect(name, options=date_opts.keys(), key=f"ua_{name}")
-                if sel: team_ua[name] = [date_opts[s] for s in sel]
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        c_back, c_next = st.columns([1, 10])
-        if c_back.button("⬅ Back"):
-            st.session_state.stage = 3
-            st.rerun()
-        if c_next.button("✨ Generate Roster ➡️", type="primary"):
-            final_ua = {}
-            for name, dates in team_ua.items():
-                for d in dates:
-                    final_ua.setdefault(d, []).append(name)
-            st.session_state.unavailability = final_ua
-            st.session_state.stage = 5
-            st.rerun()
-
-    # STAGE 5: OUTPUT
-    elif st.session_state.stage == 5:
-        st.subheader("5. Final Roster")
-        engine = RosterEngine(df_team)
-        results = []
-        ordered_events = st.session_state.event_details.sort_values("Date")
-
-        for week_idx, (_, row) in enumerate(ordered_events.iterrows()):
-            curr_date = row['Date']
-            ua = st.session_state.unavailability.get(curr_date, [])
-            working_today = []
-            
-            # SAFE ACCESS TO COLUMNS to prevent KeyError
-            is_hc = row.get('Holy Communion', False)
-            is_comb = row.get('Combined', False)
-            notes_txt = row.get('Notes', "")
-
-            det_str = " ".join([x for x in ["HC" if is_hc else "", "Comb" if is_comb else "", f"({notes_txt})" if notes_txt else ""] if x])
-
-            day_data = {
-                "Month": curr_date.month,
-                "Date": curr_date.strftime("%d-%b"),
-                "Details": det_str
-            }
-
-            for role_conf in CONFIG["ROLES"]:
-                pool = engine.get_qualified_pool(role_conf["key"], ua, working_today)
-                person = engine.pick_tech(pool, week_idx)
-                if person != "NO FILL": 
-                    working_today.append(person)
-                day_data[role_conf["label"]] = person
-            
-            lead_for_day = engine.assign_lead(working_today, ua, week_idx)
-            day_data["Team Lead"] = lead_for_day
-            
-            engine.set_previous_workers(working_today)
-            results.append(day_data)
-
-        # DISPLAY
-        final_df = pd.DataFrame(results)
-        col_order = ["Date", "Details", "Team Lead"] + [r['label'] for r in CONFIG['ROLES']]
-        
-        csv_buffer = io.StringIO()
-        is_first = True
-        
-        for m_idx, group in final_df.groupby("Month"):
-            st.write(f"##### {calendar.month_name[m_idx]}")
-            disp = group[col_order].set_index("Date").T.reset_index().rename(columns={"index": "Role"})
-            
-            # REMOVED FORCED STYLING: This now respects Dark Mode settings
-            st.dataframe(disp, use_container_width=True, hide_index=True)
-            
-            if not is_first: csv_buffer.write("\n")
-            disp.to_csv(csv_buffer, index=False)
-            is_first = False
-
-        st.divider()
-        c1, c2 = st.columns([2,1])
-        with c1:
-            st.caption("Darrell prioritized for Leads only if Tech Leads are absent.")
-            st_df = engine.get_stats()
-            if not st_df.empty:
-               st.dataframe(st_df.set_index("Name").T, use_container_width=True)
-        with c2:
-            st.download_button("💾 Download CSV", csv_buffer.getvalue(), "roster.csv", "text/csv", type="primary")
-            if st.button("🔄 Restart"):
-                st.session_state.stage = 1
-                st.rerun()
+        render_step_4_output(df_team)
 
 if __name__ == "__main__":
     main()
