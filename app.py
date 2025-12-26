@@ -6,7 +6,71 @@ from datetime import datetime, date
 import io
 
 # --- CONFIG ---
-st.set_page_config(page_title="SWS Roster Wizard", page_icon="🧙‍♂️", layout="wide")
+st.set_page_config(
+    page_title="SWS Roster Wizard", 
+    page_icon="🧙‍♂️", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# --- APPLE STYLE CSS INJECTION ---
+def apply_apple_style():
+    st.markdown("""
+        <style>
+        /* Import clean font */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+        
+        html, body, [class*="css"] {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #1d1d1f;
+        }
+
+        /* Headings */
+        h1, h2, h3 {
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            color: #1d1d1f;
+        }
+        
+        /* Rounded "Pill" Buttons with apple-blue hover */
+        div.stButton > button {
+            border-radius: 20px;
+            padding: 0.5rem 1.5rem;
+            font-weight: 500;
+            border: 1px solid #e5e5ea;
+            background-color: white;
+            color: #007AFF;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.2s ease;
+        }
+        div.stButton > button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            border-color: #007AFF;
+            color: #007AFF;
+        }
+        div.stButton > button[kind="primary"] {
+            background-color: #007AFF;
+            color: white;
+            border: none;
+        }
+        div.stButton > button[kind="primary"]:hover {
+            background-color: #0062cc;
+            color: white;
+        }
+
+        /* Clean Inputs */
+        .stTextInput input, .stSelectbox > div > div, .stMultiSelect > div > div {
+            border-radius: 12px;
+            border-color: #d1d1d6;
+        }
+        
+        /* Remove default decoration */
+        header {visibility: hidden;}
+        </style>
+    """, unsafe_allow_html=True)
+
+apply_apple_style()
 
 # --- HELPER: RERUN COMPATIBILITY ---
 def rerun_script():
@@ -16,7 +80,7 @@ def rerun_script():
     elif hasattr(st, 'experimental_rerun'):
         st.experimental_rerun()
     else:
-        st.write("⚠️ Please click 'Rerun' in the top right menu or refresh the page.")
+        st.write("⚠️ Please refresh the page.")
 
 # --- SESSION STATE SETUP ---
 if 'stage' not in st.session_state:
@@ -29,15 +93,23 @@ if 'unavailability' not in st.session_state:
     st.session_state.unavailability = {}
 
 # --- LOAD TEAM NAMES ---
-# Using the same ID as before
 SHEET_ID = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
 
-@st.cache_data
+@st.cache_data(ttl=60)
 def get_team_data():
     try:
         url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Team"
         df = pd.read_csv(url).fillna("")
         df.columns = df.columns.str.strip().str.lower()
+        
+        # Filter Logic: Check for 'Status' column (optional)
+        if 'status' in df.columns:
+            # Keep only if status is Empty or 'Active'
+            df = df[
+                (df['status'].str.lower() == 'active') | 
+                (df['status'] == '')
+            ]
+        
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -49,28 +121,30 @@ if team_df.empty:
     st.stop()
 
 if 'name' not in team_df.columns:
-    st.error(f"Error: 'Team' sheet needs a column named 'Name'. Found: {list(team_df.columns)}")
+    st.error(f"Error: 'Team' sheet must have a 'Name' column.")
     st.stop()
 
 all_team_names = sorted(team_df['name'].tolist())
 
 # --- HEADER ---
-st.title("🧙‍♂️ Roster Generator Wizard")
+st.title("🧙‍♂️ Roster Generator")
+st.markdown("---")
 
 # ==========================================
 # STAGE 1: SELECT MONTHS & YEAR
 # ==========================================
 if st.session_state.stage == 1:
-    st.header("Stage 1: Select Duration")
+    st.subheader("Select Duration")
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        year_sel = st.number_input("Year", min_value=2024, max_value=2030, value=2026)
+        year_sel = st.number_input("Year", min_value=2024, max_value=2030, value=datetime.now().year)
     with col2:
         month_names = list(calendar.month_name)[1:] 
-        selected_months = st.multiselect("Select Months", options=month_names, default=["January", "February", "March"])
+        selected_months = st.multiselect("Select Months", options=month_names)
     
-    if st.button("Next: Generate Dates ➡️", type="primary"):
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Generate Dates ➡️", type="primary"):
         if not selected_months:
             st.warning("Please select at least one month.")
         else:
@@ -94,47 +168,42 @@ if st.session_state.stage == 1:
 # STAGE 2: DATE REVIEW
 # ==========================================
 elif st.session_state.stage == 2:
-    st.header("Stage 2: Date Review")
-    st.write("Review the schedule below.")
+    st.subheader("Review Dates")
 
     if st.session_state.roster_dates:
         fmt_dates = [{"Day": d.strftime("%A"), "Date": d.strftime("%d %b %Y")} for d in st.session_state.roster_dates]
-        st.dataframe(fmt_dates, use_container_width=True, height=300)
+        st.dataframe(fmt_dates, use_container_width=True, height=250)
     else:
         st.warning("No dates currently selected.")
     
-    st.divider()
+    st.markdown("---")
     c1, c2 = st.columns(2)
     
     with c1:
-        st.subheader("➕ Add Date")
-        new_date = st.date_input("Pick a date to add", value=date.today())
-        if st.button("Add Date"):
+        st.caption("Add Date")
+        new_date = st.date_input("Pick a date", value=date.today(), label_visibility="collapsed")
+        if st.button("➕ Add"):
             if new_date not in st.session_state.roster_dates:
                 st.session_state.roster_dates.append(new_date)
                 st.session_state.roster_dates.sort()
-                st.success(f"Added {new_date}")
                 rerun_script()
-            else:
-                st.warning("Date already exists.")
 
     with c2:
-        st.subheader("❌ Remove Date")
+        st.caption("Remove Date")
         if st.session_state.roster_dates:
             date_to_remove = st.selectbox(
-                "Select a date to remove:", 
+                "Select date", 
                 options=st.session_state.roster_dates,
-                format_func=lambda x: x.strftime("%d %b %Y (%A)")
+                format_func=lambda x: x.strftime("%d %b %Y"),
+                label_visibility="collapsed"
             )
-            if st.button("Remove Selected"):
+            if st.button("❌ Remove"):
                 if date_to_remove in st.session_state.roster_dates:
                     st.session_state.roster_dates.remove(date_to_remove)
                     st.session_state.roster_dates.sort()
                     rerun_script()
-        else:
-            st.write("List is empty.")
             
-    st.divider()
+    st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 5])
     if col1.button("⬅️ Back"):
         st.session_state.stage = 1
@@ -154,7 +223,7 @@ elif st.session_state.stage == 2:
 # STAGE 3: EVENT DETAILS
 # ==========================================
 elif st.session_state.stage == 3:
-    st.header("Stage 3: Service Details")
+    st.subheader("Service Details")
     
     edited_df = st.data_editor(
         st.session_state.event_details,
@@ -168,7 +237,7 @@ elif st.session_state.stage == 3:
         use_container_width=True
     )
     
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 5])
     if col1.button("⬅️ Back"):
         st.session_state.stage = 2
@@ -182,8 +251,8 @@ elif st.session_state.stage == 3:
 # STAGE 4: UNAVAILABILITY (PERSON BASED)
 # ==========================================
 elif st.session_state.stage == 4:
-    st.header("Stage 4: Input Availability")
-    st.write("Scroll down. For each person, select the **dates they are UNAVAILABLE**.")
+    st.subheader("Team Availability")
+    st.info("Select dates when team members are **UNAVAILABLE**.")
     
     date_options_map = {}
     for _, row in st.session_state.event_details.iterrows():
@@ -196,10 +265,12 @@ elif st.session_state.stage == 4:
     dropdown_options = list(date_options_map.keys())
     person_unavailable_map = {}
 
+    st.markdown("<div style='background-color:#F5F5F7; padding:20px; border-radius:15px;'>", unsafe_allow_html=True)
+    
     for person_name in all_team_names:
         c1, c2 = st.columns([1, 3])
         with c1:
-            st.markdown(f"**{person_name}**")
+            st.markdown(f"<div style='margin-top:10px; font-weight:500;'>{person_name}</div>", unsafe_allow_html=True)
         with c2:
             selected_labels = st.multiselect(
                 f"Dates {person_name} is away",
@@ -208,9 +279,11 @@ elif st.session_state.stage == 4:
                 key=f"na_person_{person_name}"
             )
             person_unavailable_map[person_name] = selected_labels
-        st.markdown("<hr style='margin: 0.5rem 0; opacity: 0.3;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin: 0.5rem 0; border:none; border-bottom:1px solid #e0e0e0;'>", unsafe_allow_html=True)
+    
+    st.markdown("</div>", unsafe_allow_html=True)
         
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 5])
     if col1.button("⬅️ Back"):
         st.session_state.stage = 3
@@ -234,8 +307,8 @@ elif st.session_state.stage == 4:
 # STAGE 5: INTELLIGENT GENERATION & STACKED CSV OUTPUT
 # ==========================================
 elif st.session_state.stage == 5:
-    st.header("Stage 5: Final Roster")
-    st.info("Generating roster grouped by month...")
+    st.subheader("Final Roster")
+    st.caption("Grouped by month")
     
     # 1. Initialize logic counters
     load_balance_counts = {name: 0 for name in all_team_names}
@@ -249,9 +322,7 @@ elif st.session_state.stage == 5:
          ("Team Lead", "team lead") 
     ]
     
-    # We will store the flat results first to calculate logic
     generated_rows = []
-    
     sort_dates = st.session_state.event_details.sort_values(by="Date")
     
     # --- GENERATION LOOP ---
@@ -260,16 +331,15 @@ elif st.session_state.stage == 5:
         
         info_parts = []
         if row['Holy Communion']: info_parts.append("HC")
-        if row['Combined Service']: info_parts.append("Combined")
-        if not info_parts: info_parts.append("Normal")
+        if row['Combined Service']: info_parts.append("Combined (MSS)")
+        if not info_parts: info_parts.append("")
         if row['Notes']: info_parts.append(f"({row['Notes']})")
         
         away_today = st.session_state.unavailability.get(current_date_obj, [])
         working_today = [] 
         
-        # This dict keys will become the "Rows" in the final output
         day_roster = {
-            "Month": current_date_obj.month, # Helper for grouping
+            "Month": current_date_obj.month,
             "Service Dates": current_date_obj.strftime("%d-%b"),
             "Additional Details": " ".join(info_parts),
             "Cam 2": "" 
@@ -296,6 +366,7 @@ elif st.session_state.stage == 5:
             
             final_pool = fresh_legs if fresh_legs else valid
             
+            # Fallback for Team Lead
             if role_label == "Team Lead" and not final_pool:
                  darrells = [x for x in base_candidates if "darrell" in x.lower() and x not in away_today and x not in working_today]
                  if darrells: final_pool = darrells
@@ -314,60 +385,77 @@ elif st.session_state.stage == 5:
         generated_rows.append(day_roster)
 
     # --- CHUNK BY MONTH & FORMAT ---
-    
-    # 1. Create a Master DataFrame
     full_df = pd.DataFrame(generated_rows)
-    
-    # 2. Structure for processing
-    # Desired Row Order for the visual table
     desired_row_order = [
          "Additional Details", "Sound Crew", "Projectionist", 
          "Stream Director", "Cam 1", "Cam 2", "Team Lead"
     ]
     
-    # Function to create a clean mini-dataframe for display/export
     def create_month_table(month_subset_df):
-        # Set Date as Index -> Transpose -> Date becomes Header
         t_df = month_subset_df.set_index("Service Dates").T
-        # Filter to only the specific rows we want, in order
         t_df = t_df.reindex(desired_row_order)
-        # Reset index so "Role" is a column 
         t_df = t_df.reset_index().rename(columns={"index": "Role"})
         return t_df
 
-    st.success("Roster Generated Successfully!")
-    
-    # Group by Month
+    # --- STYLING FUNCTION (THE "FILLED DATES" VISUALS) ---
+    def style_dataframe(df):
+        # Header Color (Cyan/Blue like screenshot)
+        header_color = "#C3F3F5" 
+        
+        return df.style.set_properties(
+            **{
+                'background-color': '#FFFFFF', 
+                'color': '#1d1d1f', 
+                'border-color': '#E5E5EA',
+                'font-size': '14px'
+            }
+        ).set_table_styles([
+            # Style the Headers (The Dates)
+            {
+                'selector': 'th',
+                'props': [
+                    ('background-color', header_color), 
+                    ('color', 'black'),
+                    ('font-weight', '600'),
+                    ('border-bottom', '2px solid #aaaaaa'),
+                    ('text-align', 'center')
+                ]
+            },
+            # Style the First Column (Role Names)
+            {
+                'selector': 'td:first-child',
+                'props': [
+                    ('font-weight', 'bold'), 
+                    ('background-color', '#F5F5F7'),
+                    ('color', '#333333')
+                ]
+            }
+        ])
+
     grouped = full_df.groupby("Month")
-    
-    # We will build a single string for CSV export that stacks tables
     csv_output = io.StringIO()
-    
-    st.write("### 📅 Final Schedule")
     
     first_table = True
     
     for month_num, group in grouped:
         month_name = calendar.month_name[month_num]
         
-        # Visual Display
-        st.subheader(month_name)
+        st.markdown(f"#### {month_name}")
+        
         visual_table = create_month_table(group)
-        st.dataframe(visual_table, use_container_width=True, hide_index=True)
         
-        # CSV Stacking Logic
+        # DISPLAY
+        st.dataframe(style_dataframe(visual_table), use_container_width=True, hide_index=True)
+        
+        # CSV EXPORT
         if not first_table:
-            csv_output.write("\n") # Add empty line between months
-            
-        # Write Date Headers
-        # To match screenshot, we want the headers to be the column names
+            csv_output.write("\n") 
         visual_table.to_csv(csv_output, index=False)
-        
         first_table = False
 
-    # --- STATS (Excluding Team Lead) ---
-    st.write("### 📊 Distribution Stats (Technical Roles Only)")
-    st.caption("Counts exclude 'Team Lead'")
+    # --- STATS ---
+    st.divider()
+    st.write("#### 📊 Workload Stats")
     
     display_stats = {name: 0 for name in all_team_names}
     technical_roles = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]
@@ -380,16 +468,22 @@ elif st.session_state.stage == 5:
     
     stats_df = pd.DataFrame(list(display_stats.items()), columns=["Name", "Shifts"])
     stats_df = stats_df[stats_df['Shifts'] > 0].sort_values(by="Shifts", ascending=False)
-    st.dataframe(stats_df.T, use_container_width=True)
+    
+    st.dataframe(
+        stats_df.T.style.set_properties(**{'background-color': 'white'}), 
+        use_container_width=True
+    )
 
-    # --- DOWNLOAD BUTTON ---
+    # --- FOOTER ---
+    st.markdown("<br>", unsafe_allow_html=True)
     colA, colB = st.columns(2)
     with colA:
         st.download_button(
-            label="💾 Download Stacked CSV",
+            label="💾 Download Excel CSV",
             data=csv_output.getvalue(),
             file_name="roster_final_stacked.csv",
-            mime="text/csv"
+            mime="text/csv",
+            type="primary"
         )
     with colB:
         if st.button("🔄 Start Over"):
