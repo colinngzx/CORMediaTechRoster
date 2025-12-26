@@ -260,6 +260,40 @@ class RosterEngine:
 
         return "" # No qualified lead in crew
 
+    def calculate_stats(self, roster_df: pd.DataFrame) -> pd.DataFrame:
+        """Reads the final roster and counts shifts per person."""
+        stats = {n: {'Tech': 0, 'Lead': 0} for n in self.team_names}
+        
+        # Tech cols + Cam 2
+        tech_cols = [r['label'] for r in CONFIG.ROLES] + ["Cam 2"]
+        
+        for _, row in roster_df.iterrows():
+            # Count Tech
+            for col in tech_cols:
+                if col in row:
+                    name = str(row[col]).strip()
+                    if name in stats: stats[name]['Tech'] += 1
+            # Count Lead
+            if "Team Lead" in row:
+                name = str(row["Team Lead"]).strip()
+                if name in stats: stats[name]['Lead'] += 1
+        
+        # Convert to displayable format
+        rows = []
+        for name, data in stats.items():
+            total = data['Tech'] + data['Lead']
+            if total > 0:
+                rows.append({
+                    "Name": name, 
+                    "Tech Shifts": data['Tech'], 
+                    "Lead Shifts": data['Lead'], 
+                    "Total": total
+                })
+        
+        if not rows: return pd.DataFrame(columns=["Name", "Total"])
+        return pd.DataFrame(rows).sort_values("Name")
+
+
 # ==========================================
 # 5. UI RENDERERS
 # ==========================================
@@ -403,13 +437,11 @@ def render_step_3_unavailability(all_names: List[str]):
 def render_step_4_final(people_df: pd.DataFrame):
     st.header("Step 4: Roster Dashboard")
     
-    # === [FIX] SELF-HEALING STATE === 
-    # This block fixes the KeyError by detecting old versions of the data
-    # and clearing them if the columns don't match the new code needs.
+    # === SELF-HEALING STATE CHECK ===
     if st.session_state.master_roster_df is not None:
         if '_month' not in st.session_state.master_roster_df.columns:
             st.session_state.master_roster_df = None
-    # ===============================
+    # ================================
 
     # --- 1. GENERATION LOGIC (Run once) ---
     if st.session_state.master_roster_df is None:
@@ -427,7 +459,7 @@ def render_step_4_final(people_df: pd.DataFrame):
             d_raw = date_meta.get('Date')
             if not d_raw: continue
             
-            # Ensure Date Object (Handle cases where it became string)
+            # Ensure Date Object
             if isinstance(d_raw, str):
                 try: d_obj = datetime.strptime(d_raw, "%Y-%m-%d").date()
                 except: d_obj = pd.to_datetime(d_raw).date()
@@ -467,18 +499,15 @@ def render_step_4_final(people_df: pd.DataFrame):
             roster_rows.append(row_data)
             engine.prev_week_crew = current_crew # Track for next iteration
         
-        # Initialize DataFrame
         if roster_rows:
             st.session_state.master_roster_df = pd.DataFrame(roster_rows)
         else:
-            # Fallback for empty list to prevent KeyErrors
             st.session_state.master_roster_df = pd.DataFrame(
                 columns=["Service Date", "_month", "Details", "Team Lead", "Cam 2"]
             )
 
     master_df = st.session_state.master_roster_df
 
-    # Safety check if empty DF was generated
     if master_df.empty:
         st.warning("No dates found to roster. Please go back to Step 1.")
         if st.button("Start Over"): SessionManager.reset(); st.rerun()
@@ -490,8 +519,6 @@ def render_step_4_final(people_df: pd.DataFrame):
     st.subheader("✏️ Editor (Dates across top)")
     
     has_edits = False
-    
-    # Process each month separately
     if '_month' in master_df.columns:
         months = master_df['_month'].unique()
     else:
@@ -504,7 +531,6 @@ def render_step_4_final(people_df: pd.DataFrame):
             sub.set_index("Service Date", inplace=True)
             
             # 2. Transpose for UI (Roles = Rows, Dates = Columns)
-            # Ensure we only show specific columns
             view_df = sub[row_order].T
             
             edited_view = st.data_editor(
@@ -515,13 +541,10 @@ def render_step_4_final(people_df: pd.DataFrame):
             
             # 3. Detect Changes
             if not edited_view.equals(view_df):
-                # Reverse Logic: Map edited_view cells back to master_df
-                # edited_view.columns are Date strings, index are Roles
                 for d_col in edited_view.columns:
                     for role_row in edited_view.index:
                         new_val = edited_view.at[role_row, d_col]
                         
-                        # Find index in master
                         mask = (master_df['Service Date'] == d_col) & (master_df['_month'] == month)
                         if mask.any():
                             master_df.loc[mask, role_row] = new_val
@@ -539,23 +562,28 @@ def render_step_4_final(people_df: pd.DataFrame):
     csv_buffers = []
     
     for month in months:
-        # Prepare data specifically for display
         sub = master_df[master_df['_month'] == month].copy()
         sub.set_index("Service Date", inplace=True)
-        display_df = sub[row_order].T # Transpose: Dates as Columns
+        display_df = sub[row_order].T 
         
-        # Render HTML
         st.markdown(
             RosterRenderer.render_month_html(month, display_df), 
             unsafe_allow_html=True
         )
         
-        # Prepare CSV chunk
         display_df.index.name = "Role"
         csv_buffers.append(f"\n{month}\n")
         csv_buffers.append(display_df.to_csv())
 
-    # --- 4. FOOTER ACTIONS ---
+    # --- 4. LIVE LOAD STATS ---
+    st.markdown("---")
+    with st.expander("📊 Live Load Statistics", expanded=False):
+        # We re-instantiate engine just to use helper method, passing people_df
+        stats_engine = RosterEngine(people_df)
+        stats_df = stats_engine.calculate_stats(master_df)
+        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+    # --- 5. FOOTER ACTIONS ---
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
     
