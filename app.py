@@ -110,7 +110,7 @@ class RosterEngine:
             and p not in self.prev_week_crew
         ]
 
-        if not available_pool: # Fallback: allow working consecutive weeks if desperate
+        if not available_pool: 
             available_pool = [
                 p for p in candidates 
                 if p not in unavailable 
@@ -369,11 +369,11 @@ def main():
             tech_roles = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]
             lead_roles = ["Team Lead"]
             
-            # Map lowercase to proper case for clean counting (handles "ben" -> "Ben")
+            # Map lowercase to proper case for clean count
             name_map = {n.lower().strip(): n for n in all_team_members}
             stats = {name: {'Tech': 0, 'Lead': 0} for name in all_team_members}
             
-            # Scan columns (since DF is vertical now)
+            # Scan columns
             for col in current_df.columns:
                 is_tech = col in tech_roles
                 is_lead = col in lead_roles
@@ -400,12 +400,12 @@ def main():
             return pd.DataFrame(data_out).sort_values("Name")
 
         # 3. CONFIGURE DROPDOWNS
-        # We configure column types so every Role column gets a dropdown of Names
         column_configuration = {
             "Service Date": st.column_config.TextColumn("Date", disabled=True),
             "Details": st.column_config.TextColumn("Info", disabled=True),
             "Notes": st.column_config.TextColumn("Notes"),
-            "_month_group": st.column_config.Column(hidden=True)
+            # FIX: Use None to hide a column instead of the invalid Column(hidden=True)
+            "_month_group": None 
         }
         
         # Add Dropdown config for all role columns
@@ -446,6 +446,7 @@ def main():
 
         if has_changes:
             st.session_state.master_roster_df = edited_master
+            # Rerun so stats update immediately
             st.rerun()
 
         # 5. DISPLAY REAL-TIME STATS
@@ -456,8 +457,6 @@ def main():
 
         # 6. DOWNLOAD / RESET
         st.markdown("---")
-        # For CSV, we can assume they want the vertical format now, or we can transpose it back?
-        # Let's keep it vertical, it's cleaner for databases.
         csv = edited_master.drop(columns=['_month_group']).to_csv(index=False).encode('utf-8')
         
         c1, c2 = st.columns(2)
