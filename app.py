@@ -43,13 +43,12 @@ class RosterDateSpec(NamedTuple):
     notes: str
 
     @property
-    def display_details(self) -> str:
+    def service_type_details(self) -> str:
+        """Returns only the service type details (HC/Combined), not the free text notes."""
         parts = []
         if self.is_combined: parts.append("MSS Combined")
         if self.is_hc: parts.append("HC")
-        # Robust check for notes content
-        if self.notes and str(self.notes).strip().lower() not in ('nan', 'none', ''):
-            parts.append(str(self.notes).strip())
+        # If no flags are checked, return a default or empty
         return " / ".join(parts) if parts else ""
 
 class DateUtils:
@@ -228,7 +227,6 @@ def main():
 
         if st.button("Generate Date List"):
             dates = DateUtils.generate_sundays(year, months)
-            # Initialize with explicit empty string for Notes
             st.session_state.roster_dates = [
                 {"Date": d, "Combined": False, "HC": False, "Notes": ""} for d in dates
             ]
@@ -243,7 +241,7 @@ def main():
         if not st.session_state.roster_dates: st.session_state.roster_dates = []
         df_dates = pd.DataFrame(st.session_state.roster_dates)
         
-        # Ensure 'Notes' is treated as string to avoid type mixed type issues
+        # Ensure 'Notes' exists
         if 'Notes' not in df_dates.columns:
             df_dates['Notes'] = ""
         df_dates['Notes'] = df_dates['Notes'].fillna("").astype(str)
@@ -251,6 +249,7 @@ def main():
         if not df_dates.empty and 'Date' in df_dates.columns:
             df_dates['Date'] = pd.to_datetime(df_dates['Date']).dt.date
         
+        # Capture the output of data editor
         edited_df = st.data_editor(
             df_dates,
             column_config={
@@ -275,6 +274,7 @@ def main():
                     st.write(" ") 
                     st.write(" ") 
                     if st.button("Add Date"):
+                        # We must use edited_df to preserve what user typed in table so far
                         current_data = edited_df.to_dict('records')
                         if not any(d.get('Date') == new_date for d in current_data if d.get('Date')):
                             current_data.append({"Date": new_date, "Combined": False, "HC": False, "Notes": ""})
@@ -283,6 +283,7 @@ def main():
                             st.rerun()
 
             with tab_remove:
+                # Use edited_df here too
                 valid_dates = sorted([d['Date'] for d in edited_df.to_dict('records') if d.get('Date')])
                 if valid_dates:
                     c1, c2 = st.columns([1, 1])
@@ -303,14 +304,14 @@ def main():
             st.rerun()
         if col_r.button("Next: Availability →"):
             cleaned_rows = []
-            # SANITIZATION: Ensure Notes are captured as strings without NaNs
+            # Iterate through the Edited Dataframe from Step 2
             for r in edited_df.to_dict('records'):
                 if r.get('Date') and pd.notnull(r['Date']):
                     if isinstance(r['Date'], pd.Timestamp): r['Date'] = r['Date'].date()
                     
-                    # Fix for Notes being lost or NaN
+                    # FORCE STRING CONVERSION FOR NOTES
                     raw_note = r.get('Notes', '')
-                    if pd.isna(raw_note) or str(raw_note).strip().lower() == 'nan':
+                    if pd.isna(raw_note) or str(raw_note).lower() == 'nan':
                         r['Notes'] = ""
                     else:
                         r['Notes'] = str(raw_note).strip()
@@ -370,19 +371,23 @@ def main():
         for idx, r_data in enumerate(st.session_state.roster_dates):
             d_obj = r_data['Date']
             
-            # Double check retrieving notes logic
+            # Retrieve Note, ensuring it is a clean string
             n_val = r_data.get('Notes', "")
             if pd.isna(n_val) or str(n_val).lower() == 'nan': n_val = ""
+            n_val = str(n_val).strip()
             
-            spec = RosterDateSpec(d_obj, r_data['HC'], r_data['Combined'], str(n_val))
+            spec = RosterDateSpec(d_obj, r_data['HC'], r_data['Combined'], n_val)
             d_str_key = str(d_obj)
             unavailable_today = unavailable_by_date_str.get(d_str_key, [])
             
             current_crew = []
+            
+            # --- BUILD ROW DICTIONARY ---
             date_entry = {
                 "Service Dates": d_obj.strftime("%d-%b"), 
                 "_full_date": d_obj, 
-                "Additional Details": spec.display_details
+                "Additional Details": spec.service_type_details, 
+                "Notes": spec.notes # Explicit Notes Field
             }
             
             for role_conf in CONFIG.ROLES:
@@ -407,7 +412,18 @@ def main():
         df_transposed = df_schedule.drop(columns=['Service Dates', '_full_date']).T
         df_transposed.columns = col_headers
         
-        desired_order = ["Additional Details", "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead"]
+        # --- DEFINE FINAL ORDER (Row 1: Details, Row 2: Notes) ---
+        desired_order = [
+            "Additional Details", 
+            "Notes", 
+            "Sound Crew", 
+            "Projectionist", 
+            "Stream Director", 
+            "Cam 1", 
+            "Cam 2", 
+            "Team Lead"
+        ]
+        
         df_final_master = df_transposed.reindex(desired_order).fillna("")
 
         dates_by_month = defaultdict(list)
