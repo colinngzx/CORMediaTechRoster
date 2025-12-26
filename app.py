@@ -242,6 +242,7 @@ def main():
     # [STEP 2] Edit Details
     elif st.session_state.stage == 2:
         st.header("Step 2: Service Details")
+        st.info("ℹ️ To delete a date: select the row number on the left and press Delete. To add a date: click the + row at the bottom.")
         
         df_dates = pd.DataFrame(st.session_state.roster_dates)
         if not df_dates.empty:
@@ -252,9 +253,9 @@ def main():
             column_config={
                 "Date": st.column_config.DateColumn("Service Date", format="DD-MMM", required=True),
             },
-            num_rows="dynamic",
+            num_rows="dynamic",     # Allows adding/deletion
             use_container_width=True,
-            hide_index=True,
+            hide_index=False,       # Changed to False so you can select rows to delete them
             key="date_editor"
         )
         
@@ -272,6 +273,9 @@ def main():
         st.header("Step 3: Unavailability")
         
         date_options = [d['Date'] for d in st.session_state.roster_dates if d.get('Date')]
+        # Handle cases where user added a row but left date blank
+        date_options = [d for d in date_options if pd.notna(d)]
+        
         date_map = {str(d): d for d in date_options}
         sorted_date_keys = sorted(list(date_map.keys()))
 
@@ -329,7 +333,7 @@ def main():
 
             for idx, r_data in enumerate(st.session_state.roster_dates):
                 d_obj = r_data['Date']
-                if not d_obj: continue
+                if not d_obj or pd.isna(d_obj): continue
                 
                 spec = RosterDateSpec(d_obj, r_data.get('HC', False), r_data.get('Combined', False), r_data.get('Notes', ""))
                 d_str_key = str(d_obj)
@@ -348,8 +352,8 @@ def main():
                     )
                     date_entry[role_conf['label']] = person
                     if person: current_crew.append(person)
-                
-                # UPDATED: Cam 2 is deliberately left blank
+
+                # Explicitly empty Cam 2
                 date_entry["Cam 2"] = ""
 
                 t_lead = engine.assign_lead(current_crew, unavailable_today, idx)
@@ -403,7 +407,6 @@ def main():
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
         # =============================
 
-        # Footer Actions
         st.markdown("---")
         c1, c2, c3 = st.columns([1, 2, 1])
         
