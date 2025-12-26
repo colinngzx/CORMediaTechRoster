@@ -170,9 +170,9 @@ def fetch_data():
         st.error(f"Error: {e}")
         return pd.DataFrame()
 
-# REMOVED FORCED WHITE BACKGROUND CSS
 def apply_styling():
-    # Only keeping button color and table tweaks
+    # Only color the button blue. 
+    # Removed all other CSS to let browser Default Dark Mode handle text visibility.
     st.markdown("""
         <style>
         div.stButton > button[kind="primary"] { background-color: #007AFF !important; color: white !important; }
@@ -185,12 +185,25 @@ def apply_styling():
 
 def main():
     st.set_page_config(page_title=CONFIG["PAGE_TITLE"], layout="wide")
-    apply_styling() # Minimal styling
+    apply_styling()
     
+    # Session State Initialization
     if 'stage' not in st.session_state: st.session_state.stage = 1
     if 'roster_dates' not in st.session_state: st.session_state.roster_dates = []
     if 'event_details' not in st.session_state: st.session_state.event_details = pd.DataFrame()
     if 'unavailability' not in st.session_state: st.session_state.unavailability = {}
+
+    # --- SAFETY FIX FOR OLD DATA ---
+    # If your session still has old data without the 'Combined' column, this adds it automatically.
+    if not st.session_state.event_details.empty:
+        required_cols = ["Holy Communion", "Combined", "Notes"]
+        for col in required_cols:
+            if col not in st.session_state.event_details.columns:
+                if col == "Notes":
+                    st.session_state.event_details[col] = ""
+                else:
+                    st.session_state.event_details[col] = False
+    # -------------------------------
 
     df_team = fetch_data()
     if df_team.empty: st.stop()
@@ -252,7 +265,7 @@ def main():
         team_names = sorted(df_team['name'].unique())
         for i, name in enumerate(team_names):
             with cols[i%3]:
-                # Labels should be visible now in Dark Mode
+                # Labels should now be visible in default Dark Mode
                 sel = st.multiselect(name, options=date_opts.keys(), key=f"ua_{name}")
                 if sel: team_ua[name] = [date_opts[s] for s in sel]
         
@@ -282,10 +295,17 @@ def main():
             ua = st.session_state.unavailability.get(curr_date, [])
             working_today = []
             
+            # SAFE ACCESS TO COLUMNS to prevent KeyError
+            is_hc = row.get('Holy Communion', False)
+            is_comb = row.get('Combined', False)
+            notes_txt = row.get('Notes', "")
+
+            det_str = " ".join([x for x in ["HC" if is_hc else "", "Comb" if is_comb else "", f"({notes_txt})" if notes_txt else ""] if x])
+
             day_data = {
                 "Month": curr_date.month,
                 "Date": curr_date.strftime("%d-%b"),
-                "Details": " ".join([x for x in ["HC" if row['Holy Communion'] else "", "Comb" if row['Combined'] else "", f"({row['Notes']})" if row['Notes'] else ""] if x])
+                "Details": det_str
             }
 
             for role_conf in CONFIG["ROLES"]:
@@ -312,16 +332,8 @@ def main():
             st.write(f"##### {calendar.month_name[m_idx]}")
             disp = group[col_order].set_index("Date").T.reset_index().rename(columns={"index": "Role"})
             
-            # This styling forces black text on white background ONLY for the table
-            styler = disp.style.set_properties(**{
-                'text-align': 'center', 
-                'background-color': '#ffffff', 
-                'color': '#000000', 
-                'border-color': '#dddddd'
-            })
-            styler = styler.applymap(lambda v: 'background-color: #e6f2ff; font-weight: bold; color: black', subset=['Role'])
-            
-            st.dataframe(styler, use_container_width=True, hide_index=True)
+            # REMOVED FORCED STYLING: This now respects Dark Mode settings
+            st.dataframe(disp, use_container_width=True, hide_index=True)
             
             if not is_first: csv_buffer.write("\n")
             disp.to_csv(csv_buffer, index=False)
