@@ -44,11 +44,9 @@ class RosterDateSpec(NamedTuple):
 
     @property
     def service_type_details(self) -> str:
-        """Returns only the service type details (HC/Combined), not the free text notes."""
         parts = []
         if self.is_combined: parts.append("MSS Combined")
         if self.is_hc: parts.append("HC")
-        # If no flags are checked, return empty
         return " / ".join(parts) if parts else ""
 
 class DateUtils:
@@ -70,7 +68,6 @@ class DateUtils:
         for m_name in month_names:
             m_idx = month_map.get(m_name)
             if not m_idx: continue
-            
             _, days_in_month = calendar.monthrange(year, m_idx)
             for day in range(1, days_in_month + 1):
                 try:
@@ -102,12 +99,10 @@ class RosterEngine:
         self.last_worked_idx[person] = week_idx
 
     def get_tech_candidate(self, role_col: str, unavailable: List[str], current_crew: List[str], week_idx: int) -> str:
-        if role_col not in self.df.columns:
-            return ""
-
+        if role_col not in self.df.columns: return ""
         mask = self.df[role_col].astype(str).str.strip().str.lower() == 'yes'
         candidates = self.df[mask]['name'].tolist()
-
+        
         available_pool = [
             p for p in candidates 
             if p not in unavailable 
@@ -115,15 +110,14 @@ class RosterEngine:
             and p not in self.prev_week_crew
         ]
 
-        if not available_pool:
+        if not available_pool: # Fallback: allow working consecutive weeks if desperate
             available_pool = [
                 p for p in candidates 
                 if p not in unavailable 
                 and p not in current_crew
             ]
 
-        if not available_pool:
-            return ""
+        if not available_pool: return ""
 
         random.shuffle(available_pool) 
         available_pool.sort(key=lambda x: (self.tech_load.get(x, 0), self.last_worked_idx.get(x, -999)))
@@ -134,7 +128,6 @@ class RosterEngine:
 
     def assign_lead(self, current_crew: List[str], unavailable: List[str], week_idx: int) -> str:
         crew_present = [p for p in current_crew if p]
-        
         primaries = [p for p in crew_present if any(lead.lower() in p.lower() for lead in CONFIG.PRIMARY_LEADS)]
         
         if primaries:
@@ -157,7 +150,6 @@ class RosterEngine:
             selected = fallbacks[0]
             self._update_stats(selected, "lead", week_idx)
             return selected
-
         return ""
 
 # ==========================================
@@ -189,16 +181,12 @@ def fetch_roster_data() -> pd.DataFrame:
 def main():
     st.title("🎛️ SWS Roster Wizard")
     
-    # Initialize Session State
     if 'stage' not in st.session_state: st.session_state.stage = 1
     if 'roster_dates' not in st.session_state: st.session_state.roster_dates = []
     if 'unavailability_by_person' not in st.session_state: st.session_state.unavailability_by_person = {}
     
     df_team = fetch_roster_data()
-    
-    if df_team.empty:
-        st.info("Roster data could not be loaded.")
-        st.stop()
+    if df_team.empty: st.stop()
     
     all_names = sorted(df_team['name'].unique().tolist(), key=lambda x: str(x).lower())
 
@@ -225,18 +213,12 @@ def main():
         st.header("Step 2: Service Details")
         st.info("Edit details below. Use the tabs below to Add or Remove dates.")
         
-        if not st.session_state.roster_dates: st.session_state.roster_dates = []
         df_dates = pd.DataFrame(st.session_state.roster_dates)
-        
-        # Ensure 'Notes' exists
-        if 'Notes' not in df_dates.columns:
-            df_dates['Notes'] = ""
+        if 'Notes' not in df_dates.columns: df_dates['Notes'] = ""
         df_dates['Notes'] = df_dates['Notes'].fillna("").astype(str)
-        
         if not df_dates.empty and 'Date' in df_dates.columns:
             df_dates['Date'] = pd.to_datetime(df_dates['Date']).dt.date
         
-        # Capture the output of data editor
         edited_df = st.data_editor(
             df_dates,
             column_config={
@@ -292,13 +274,8 @@ def main():
             for r in edited_df.to_dict('records'):
                 if r.get('Date') and pd.notnull(r['Date']):
                     if isinstance(r['Date'], pd.Timestamp): r['Date'] = r['Date'].date()
-                    raw_note = r.get('Notes', '')
-                    if pd.isna(raw_note) or str(raw_note).lower() == 'nan':
-                        r['Notes'] = ""
-                    else:
-                        r['Notes'] = str(raw_note).strip()
+                    r['Notes'] = str(r.get('Notes', '')).strip()
                     cleaned_rows.append(r)
-            
             cleaned_rows.sort(key=lambda x: x['Date'])
             st.session_state.roster_dates = cleaned_rows
             st.session_state.stage = 3
@@ -307,7 +284,6 @@ def main():
     # --- STEP 3: UNAVAILABILITY ---
     elif st.session_state.stage == 3:
         st.header("Step 3: Unavailability")
-        
         date_options = [r['Date'] for r in st.session_state.roster_dates]
         date_map = {str(d): d for d in date_options}
         sorted_date_keys = sorted(list(date_map.keys()))
@@ -337,13 +313,12 @@ def main():
             st.session_state.stage = 2
             st.rerun()
 
-    # --- STEP 4: FINAL ROSTER (EDITABLE) ---
+    # --- STEP 4: FINAL ROSTER (EDITABLE & VERTICAL) ---
     elif st.session_state.stage == 4:
         st.header("Step 4: Final Roster")
-        st.info("✍️ You can now edit cells directly below. Change names or details and the stats will update automatically.")
+        st.info("💡 **Tip:** Click any cell to pick a name from the list. The stats update instantly.")
 
-        # 1. GENERATE ROSTER ONCE AND SAVE TO SESSION STATE
-        # This prevents re-randomizing every time you type in a cell
+        # 1. GENERATE ROSTER ONCE
         if 'master_roster_df' not in st.session_state:
             unavailable_by_date_str = defaultdict(list)
             for name, unavailable_dates in st.session_state.unavailability_by_person.items():
@@ -355,23 +330,20 @@ def main():
 
             for idx, r_data in enumerate(st.session_state.roster_dates):
                 d_obj = r_data['Date']
-                n_val = r_data.get('Notes', "")
-                if pd.isna(n_val) or str(n_val).lower() == 'nan': n_val = ""
-                n_val = str(n_val).strip()
-                
+                n_val = str(r_data.get('Notes', "")).strip()
                 spec = RosterDateSpec(d_obj, r_data['HC'], r_data['Combined'], n_val)
                 d_str_key = str(d_obj)
                 unavailable_today = unavailable_by_date_str.get(d_str_key, [])
                 
                 current_crew = []
                 date_entry = {
-                    "Service Dates": d_obj.strftime("%d-%b"), 
-                    "_full_date": d_obj, 
-                    "_month_group": d_obj.strftime("%B %Y"), # For grouping
-                    "Additional Details": spec.service_type_details, 
+                    "Service Date": d_obj.strftime("%d-%b"), 
+                    "_month_group": d_obj.strftime("%B %Y"),
+                    "Details": spec.service_type_details, 
                     "Notes": spec.notes 
                 }
                 
+                # Assign Roles
                 for role_conf in CONFIG.ROLES:
                     person = engine.get_tech_candidate(
                         role_conf['sheet_col'], unavailable_today, current_crew, idx
@@ -388,44 +360,32 @@ def main():
 
             df_schedule = pd.DataFrame(raw_schedule)
             
-            # Save reference for grouping columns
-            st.session_state.raw_schedule_ref = df_schedule[['Service Dates', '_full_date', '_month_group']].to_dict('records')
+            # Reorder columns explicitly
+            cols_order = ["Service Date", "Details", "Notes", "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead", "_month_group"]
+            st.session_state.master_roster_df = df_schedule.reindex(columns=cols_order, fill_value="")
 
-            # Transpose
-            col_headers = df_schedule['Service Dates'].tolist()
-            df_transposed = df_schedule.drop(columns=['Service Dates', '_full_date', '_month_group']).T
-            df_transposed.columns = col_headers
-            
-            desired_order = [
-                "Additional Details", "Notes", 
-                "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", 
-                "Team Lead"
-            ]
-            
-            # Save final master to session state
-            st.session_state.master_roster_df = df_transposed.reindex(desired_order).fillna("")
-
-        # 2. HELPER: LIVE STATS CALCULATION
+        # 2. HELPER: LIVE STATS (Robust Case-Insensitive)
         def recalculate_live_stats(current_df, all_team_members):
             tech_roles = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]
             lead_roles = ["Team Lead"]
+            
+            # Map lowercase to proper case for clean counting (handles "ben" -> "Ben")
+            name_map = {n.lower().strip(): n for n in all_team_members}
             stats = {name: {'Tech': 0, 'Lead': 0} for name in all_team_members}
             
-            for role_name, row_data in current_df.iterrows():
-                role_str = str(role_name).strip()
-                is_tech = role_str in tech_roles
-                is_lead = role_str in lead_roles
+            # Scan columns (since DF is vertical now)
+            for col in current_df.columns:
+                is_tech = col in tech_roles
+                is_lead = col in lead_roles
                 
-                if not (is_tech or is_lead): continue
+                if is_tech or is_lead:
+                    for val in current_df[col]:
+                        val_str = str(val).strip().lower()
+                        if val_str in name_map:
+                            real_name = name_map[val_str]
+                            if is_tech: stats[real_name]['Tech'] += 1
+                            if is_lead: stats[real_name]['Lead'] += 1
 
-                for person in row_data.values:
-                    p_name = str(person).strip()
-                    # Fuzzy match or direct match approach - here we assume user types exactly or selects
-                    # We iterate mostly to just count names that exist in our database
-                    if p_name and p_name in stats:
-                        if is_tech: stats[p_name]['Tech'] += 1
-                        if is_lead: stats[p_name]['Lead'] += 1
-            
             data_out = []
             for name, counts in stats.items():
                 total = counts['Tech'] + counts['Lead']
@@ -439,56 +399,73 @@ def main():
             if not data_out: return pd.DataFrame(columns=["Name", "Total"])
             return pd.DataFrame(data_out).sort_values("Name")
 
-        # 3. DISPLAY EDITABLE TABLES BY MONTH
-        schedule_ref = st.session_state.raw_schedule_ref
-        dates_by_month = defaultdict(list)
-        for entry in schedule_ref:
-            dates_by_month[entry['_month_group']].append(entry['Service Dates'])
-
-        # Create a copy to track edits
-        edited_master = st.session_state.master_roster_df.copy()
-        has_changes = False
-
-        for month_name, col_names in dates_by_month.items():
-            st.subheader(month_name)
-            valid_cols = [c for c in col_names if c in edited_master.columns]
-            if not valid_cols: continue
-                
-            month_df = edited_master[valid_cols]
-            
-            # --- THE EDITABLE TABLE ---
-            edited_month_df = st.data_editor(
-                month_df, 
-                key=f"editor_{month_name}",
-                use_container_width=True
+        # 3. CONFIGURE DROPDOWNS
+        # We configure column types so every Role column gets a dropdown of Names
+        column_configuration = {
+            "Service Date": st.column_config.TextColumn("Date", disabled=True),
+            "Details": st.column_config.TextColumn("Info", disabled=True),
+            "Notes": st.column_config.TextColumn("Notes"),
+            "_month_group": st.column_config.Column(hidden=True)
+        }
+        
+        # Add Dropdown config for all role columns
+        roles_to_dropdown = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead"]
+        for r in roles_to_dropdown:
+            column_configuration[r] = st.column_config.SelectboxColumn(
+                r,
+                options=all_names,
+                required=False
             )
 
-            # Check for changes
-            if not edited_month_df.equals(month_df):
-                edited_master.update(edited_month_df)
+        # 4. DISPLAY EDITABLE TABLES BY MONTH
+        master_df = st.session_state.master_roster_df
+        unique_months = master_df['_month_group'].unique()
+        
+        edited_master = master_df.copy()
+        has_changes = False
+
+        for month in unique_months:
+            st.subheader(month)
+            month_mask = master_df['_month_group'] == month
+            month_subset = master_df[month_mask]
+            
+            # THE EDITOR WITH DROPDOWNS
+            edited_subset = st.data_editor(
+                month_subset,
+                column_config=column_configuration,
+                use_container_width=True,
+                hide_index=True,
+                key=f"editor_{month}"
+            )
+            
+            # Sync edits back to master
+            if not edited_subset.equals(month_subset):
+                # Update the master dataframe at the specific indices
+                edited_master.loc[month_mask] = edited_subset
                 has_changes = True
 
         if has_changes:
             st.session_state.master_roster_df = edited_master
-            # Rerun so stats update immediately
             st.rerun()
 
-        # 4. DISPLAY REAL-TIME STATS
+        # 5. DISPLAY REAL-TIME STATS
         st.markdown("---")
         with st.expander("📊 Live Load Statistics", expanded=True):
             live_stats = recalculate_live_stats(edited_master, all_names)
             st.dataframe(live_stats, use_container_width=True)
 
-        # 5. DOWNLOAD / RESET
+        # 6. DOWNLOAD / RESET
         st.markdown("---")
-        csv = edited_master.to_csv().encode('utf-8')
+        # For CSV, we can assume they want the vertical format now, or we can transpose it back?
+        # Let's keep it vertical, it's cleaner for databases.
+        csv = edited_master.drop(columns=['_month_group']).to_csv(index=False).encode('utf-8')
+        
         c1, c2 = st.columns(2)
         with c1: 
-            st.download_button("📥 Download Final CSV", csv, "roster_final.csv", "text/csv")
+            st.download_button("📥 Download Roster (CSV)", csv, "roster_final.csv", "text/csv")
         with c2: 
             if st.button("Start Over"):
-                # Clean up session state
-                keys_to_del = ['stage', 'roster_dates', 'unavailability_by_person', 'master_roster_df', 'raw_schedule_ref']
+                keys_to_del = ['stage', 'roster_dates', 'unavailability_by_person', 'master_roster_df']
                 for k in keys_to_del:
                     if k in st.session_state: del st.session_state[k]
                 st.session_state.stage = 1
