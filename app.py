@@ -14,14 +14,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AppConfig:
     PAGE_TITLE: str = "SWS Roster Wizard"
-    
-    # YOUR GOOGLE SHEET ID
     SHEET_ID: str = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
-    
-    # Priority for Team Lead assignments
     PRIMARY_LEADS: Tuple[str, ...] = ("gavin", "ben", "mich lo")
-    
-    # Mapping App Roles to YOUR Google Sheet Columns (lowercased)
     ROLES: Tuple[Dict[str, str], ...] = (
         {"label": "Sound Crew",      "sheet_col": "sound"},
         {"label": "Projectionist",   "sheet_col": "projection"},
@@ -248,7 +242,6 @@ def main():
         if not df_dates.empty:
             df_dates['Date'] = pd.to_datetime(df_dates['Date']).dt.date
         
-        # We display the table
         edited_df = st.data_editor(
             df_dates,
             column_config={
@@ -259,11 +252,9 @@ def main():
             key="date_editor"
         )
 
-        # === ADD / REMOVE DATES PANEL ===
         st.write("### Manage Dates")
         c_add, c_remove = st.columns(2)
         
-        # 1. ADD Logic
         with c_add:
             new_date_val = st.date_input("Pick a date to add", value=None)
             if st.button("➕ Add Single Date"):
@@ -284,17 +275,14 @@ def main():
                     else:
                         st.warning("Date already exists.")
 
-        # 2. REMOVE Logic
         with c_remove:
             current_dates = [d['Date'] for d in edited_df.to_dict('records') if pd.notna(d['Date'])]
             current_dates.sort()
-            
             dates_to_remove = st.multiselect(
                 "Select dates to remove", 
                 options=current_dates,
                 format_func=lambda x: x.strftime("%d-%b")
             )
-            
             if st.button("🗑️ Remove Selected"):
                 if dates_to_remove:
                     remove_set = set(dates_to_remove)
@@ -305,7 +293,6 @@ def main():
                     st.rerun()
 
         st.markdown("---")
-        
         c1, c2 = st.columns([1, 4])
         if c1.button("← Back"):
             st.session_state.stage = 1
@@ -321,7 +308,6 @@ def main():
         
         date_options = [d['Date'] for d in st.session_state.roster_dates if d.get('Date')]
         date_options = [d for d in date_options if pd.notna(d)]
-        
         date_map = {str(d): d for d in date_options}
         sorted_date_keys = sorted(list(date_map.keys()))
 
@@ -364,8 +350,6 @@ def main():
             if st.button("Refresh Data"):
                 st.cache_data.clear()
                 st.rerun()
-            st.caption("Copy names here:")
-            st.code("\n".join(all_names), language="text")
 
         if 'master_roster_df' not in st.session_state:
             unavailable_by_date_str = defaultdict(list)
@@ -408,11 +392,9 @@ def main():
 
             st.session_state.master_roster_df = pd.DataFrame(raw_schedule)
 
-        # ----------------------------------------------------
         # SECTION A: EDITING INTERFACE
-        # ----------------------------------------------------
         st.subheader("✏️ Editor")
-        st.info("💡 Edit here. The 'Copy List' at the bottom will update automatically.")
+        st.info("💡 Edit here. The 'Copy List' below updates automatically.")
 
         master_df = st.session_state.master_roster_df
         display_rows_order = ["Details", "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead"]
@@ -421,8 +403,7 @@ def main():
         if '_month_group' in master_df.columns:
             unique_months = master_df['_month_group'].unique()
             for month in unique_months:
-                # Removed st.expander, now just a subheader
-                st.write(f"**{month}**") 
+                st.write(f"**{month}**")
                 
                 month_subset = master_df[master_df['_month_group'] == month].copy()
                 month_subset = month_subset.set_index("Service Date")
@@ -450,15 +431,13 @@ def main():
             st.session_state.master_roster_df = master_df
             st.rerun()
 
-        # ----------------------------------------------------
         # SECTION B: COPY-FRIENDLY VIEW
-        # ----------------------------------------------------
         st.markdown("---")
         st.subheader("📋 Copy List")
         st.caption("Select the tables below to copy to Excel. Dates are included as the first row.")
         
-        full_html_stack = []
-        
+        # FIX: We now generate and render each table individually inside the loop.
+        # This prevents the Markdown parser from getting confused by multiple tables in one string.
         months_ordered = master_df['_month_group'].unique()
         for month in months_ordered:
             sub = master_df[master_df['_month_group'] == month].copy()
@@ -472,18 +451,15 @@ def main():
             t_sub.index.name = "Service Dates"
             t_sub.reset_index(inplace=True)
             
-            # Prepare data: Header becomes Row 0
+            # Header becomes Row 0
             new_header_row = pd.DataFrame([t_sub.columns.values], columns=t_sub.columns)
             final_view = pd.concat([new_header_row, t_sub], ignore_index=True)
             final_view.columns = range(final_view.shape[1])
             
             html_table = final_view.to_html(header=False, index=False, border=1)
             
-            # FIXED: Removed indentation from f-string to prevent Markdown code block rendering
-            styled_html = f'<div style="margin-bottom: 25px;"><strong>{month}</strong><br>{html_table}</div>'
-            full_html_stack.append(styled_html)
-            
-        st.markdown("\n".join(full_html_stack), unsafe_allow_html=True)
+            # Render IMMEDIATELLY to ensure clean HTML parsing per block
+            st.markdown(f'<div style="margin-bottom: 25px;"><strong>{month}</strong><br>{html_table}</div>', unsafe_allow_html=True)
 
         st.markdown("---")
         with st.expander("📊 Live Load Statistics", expanded=False):
@@ -491,7 +467,6 @@ def main():
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        # BUTTONS
         c1, c2, c3, c4 = st.columns(4)
         
         with c1:
@@ -506,8 +481,6 @@ def main():
 
         with c3:
             csv_stack = []
-            
-            months_ordered = master_df['_month_group'].unique()
             for m in months_ordered:
                 sub = master_df[master_df['_month_group'] == m].copy()
                 if "Service Date" in sub.columns:
