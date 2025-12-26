@@ -6,6 +6,7 @@ from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
+from collections import defaultdict  # <--- FIXED: Added this import
 
 # ==========================================
 # 1. CONSTANTS & CONFIGURATION
