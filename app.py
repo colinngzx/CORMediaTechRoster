@@ -26,6 +26,8 @@ def get_team_data():
     try:
         url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Team"
         df = pd.read_csv(url).fillna("")
+        # --- CRITICAL FIX: Normalize headers to lowercase to prevent KeyErrors ---
+        df.columns = df.columns.str.strip().str.lower()
         return df
     except:
         return pd.DataFrame()
@@ -36,7 +38,12 @@ if team_df.empty:
     st.error("Could not load team members from Google Sheet. Check internet or Sheet permissions.")
     st.stop()
 
-all_team_names = team_df['Name'].tolist()
+# logic to handle potential column name mismatches
+if 'name' not in team_df.columns:
+    st.error("Error: The 'Team' sheet must have a column named 'Name'. Found: " + ", ".join(team_df.columns))
+    st.stop()
+
+all_team_names = team_df['name'].tolist()
 
 # --- HEADER ---
 st.title("🧙‍♂️ Roster Generator Wizard")
@@ -115,8 +122,7 @@ elif st.session_state.stage == 2:
         st.session_state.stage = 1
         st.rerun()
     if col2.button("Next: Event Details ➡️"):
-        # Initialize the DataFrame for the next step
-        # Updated Structure: Date | HC (bool) | Combined (bool) | Notes (str)
+        # Initialize the DataFrame
         data = {
             "Date": st.session_state.roster_dates,
             "Holy Communion": [False] * len(st.session_state.roster_dates),
@@ -128,7 +134,7 @@ elif st.session_state.stage == 2:
         st.rerun()
 
 # ==========================================
-# STAGE 3: EVENT DETAILS (HC / COMBINED / NOTES)
+# STAGE 3: EVENT DETAILS
 # ==========================================
 elif st.session_state.stage == 3:
     st.header("Stage 3: Service Details")
@@ -171,14 +177,12 @@ elif st.session_state.stage == 4:
     for index, row in st.session_state.event_details.iterrows():
         d_str = row['Date'].strftime("%d-%b")
         
-        # Build a label based on checkboxes
         type_parts = []
         if row['Holy Communion']: type_parts.append("HC")
         if row['Combined Service']: type_parts.append("Combined")
         if not type_parts: type_parts.append("Normal")
         
         type_label = "/".join(type_parts)
-        
         note = row['Notes']
         label = f"{d_str} ({type_label})"
         if note:
@@ -203,7 +207,7 @@ elif st.session_state.stage == 4:
         st.rerun()
 
 # ==========================================
-# STAGE 5: GENERATION & DISPLAY
+# STAGE 5: GENERATION
 # ==========================================
 elif st.session_state.stage == 5:
     st.header("Stage 5: Final Roster")
@@ -228,12 +232,9 @@ elif st.session_state.stage == 5:
         if row['Holy Communion']: info_parts.append("HC")
         if row['Combined Service']: info_parts.append("Combined")
         if not info_parts: info_parts.append("Normal")
-        
         if row['Notes']: info_parts.append(f"({row['Notes']})")
-        
         service_info = " ".join(info_parts)
         
-        # Who is away this specific date?
         away_today = st.session_state.unavailability.get(current_date, [])
         working_today = []
         
@@ -244,20 +245,23 @@ elif st.session_state.stage == 5:
         
         for role_label, search_keyword in roles_config:
             
-            # 1. Handle Cam 2 (Always Blank per rules)
+            # 1. Handle Cam 2
             if role_label == "Cam 2":
                 day_roster[role_label] = ""
                 continue
                 
             # 2. Team Lead Special Logic
             if role_label == "Team Lead":
-                candidates = team_df[
-                    (team_df['team lead'].astype(str).str.contains("yes", case=False)) &
-                    (~team_df['Name'].isin(away_today)) &
-                    (~team_df['Name'].isin(working_today))
-                ]['Name'].tolist()
+                # NOTE: We use lowercase 'team lead' because we normalized headers at the top
+                if 'team lead' in team_df.columns:
+                    candidates = team_df[
+                        (team_df['team lead'].astype(str).str.contains("yes", case=False)) &
+                        (~team_df['name'].isin(away_today)) &
+                        (~team_df['name'].isin(working_today))
+                    ]['name'].tolist()
+                else:
+                    candidates = [] # Should not happen if sheet is correct
                 
-                # Logic: Avoid Darrell if possible, unless he's the only one
                 final_candidates = []
                 if candidates:
                     darrell_free = [x for x in candidates if "darrell" not in x.lower()]
@@ -267,15 +271,16 @@ elif st.session_state.stage == 5:
                     
             # 3. Standard Roles
             else:
+                 # NOTE: We use lowercase 'role 1', 'role 2' etc
                  final_candidates = team_df[
                     (
-                        team_df['Role 1'].astype(str).str.contains(search_keyword, case=False) | 
-                        team_df['Role 2'].astype(str).str.contains(search_keyword, case=False) | 
-                        team_df['Role 3'].astype(str).str.contains(search_keyword, case=False)
+                        team_df['role 1'].astype(str).str.contains(search_keyword, case=False) | 
+                        team_df['role 2'].astype(str).str.contains(search_keyword, case=False) | 
+                        team_df['role 3'].astype(str).str.contains(search_keyword, case=False)
                     ) & 
-                    (~team_df['Name'].isin(away_today)) &
-                    (~team_df['Name'].isin(working_today))
-                ]['Name'].tolist()
+                    (~team_df['name'].isin(away_today)) &
+                    (~team_df['name'].isin(working_today))
+                ]['name'].tolist()
             
             # PICK ONE
             if final_candidates:
@@ -284,3 +289,29 @@ elif st.session_state.stage == 5:
                 working_today.append(pick)
             else:
                 day_roster[role_label] = "NO FILL"
+        
+        final_results.append(day_roster)
+
+    # Convert to DataFrame
+    final_df = pd.DataFrame(final_results)
+    
+    # Display
+    st.success("Roster Generated!")
+    edited_final = st.data_editor(final_df, use_container_width=True, height=600)
+    
+    st.write("### Actions")
+    
+    csv_buffer = io.BytesIO()
+    edited_final.to_csv(csv_buffer, index=False)
+    
+    st.download_button(
+        label="💾 Download CSV (for Excel/Google Sheets)",
+        data=csv_buffer.getvalue(),
+        file_name="roster_final.csv",
+        mime="text/csv"
+    )
+    
+    if st.button("🔄 Start Over"):
+        st.session_state.stage = 1
+        st.session_state.roster_dates = []
+        st.rerun()
