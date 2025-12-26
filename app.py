@@ -412,7 +412,7 @@ def main():
         # SECTION A: EDITING INTERFACE
         # ----------------------------------------------------
         st.subheader("✏️ Editor")
-        st.caption("Make changes here. The 'Copy View' below will update automatically.")
+        st.info("💡 Edit here. The 'Copy List' at the bottom will update automatically.")
 
         master_df = st.session_state.master_roster_df
         display_rows_order = ["Details", "Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2", "Team Lead"]
@@ -421,29 +421,30 @@ def main():
         if '_month_group' in master_df.columns:
             unique_months = master_df['_month_group'].unique()
             for month in unique_months:
-                with st.expander(f"Edit: {month}", expanded=True):
-                    month_subset = master_df[master_df['_month_group'] == month].copy()
-                    
-                    month_subset = month_subset.set_index("Service Date")
-                    view_subset = month_subset[display_rows_order]
-                    transposed_view = view_subset.T
-                    
-                    edited_transposed = st.data_editor(
-                        transposed_view,
-                        use_container_width=True,
-                        key=f"editor_{month}"
-                    )
-                    
-                    if not edited_transposed.equals(transposed_view):
-                        reverted_df = edited_transposed.T.reset_index()
-                        for _, row in reverted_df.iterrows():
-                            d_val = row['Service Date']
-                            idx_in_master = master_df.index[master_df['Service Date'] == d_val]
-                            if not idx_in_master.empty:
-                                idx = idx_in_master[0]
-                                for col in display_rows_order:
-                                    master_df.at[idx, col] = row[col]
-                        has_changes = True
+                # Removed st.expander, now just a subheader
+                st.write(f"**{month}**") 
+                
+                month_subset = master_df[master_df['_month_group'] == month].copy()
+                month_subset = month_subset.set_index("Service Date")
+                view_subset = month_subset[display_rows_order]
+                transposed_view = view_subset.T
+                
+                edited_transposed = st.data_editor(
+                    transposed_view,
+                    use_container_width=True,
+                    key=f"editor_{month}"
+                )
+                
+                if not edited_transposed.equals(transposed_view):
+                    reverted_df = edited_transposed.T.reset_index()
+                    for _, row in reverted_df.iterrows():
+                        d_val = row['Service Date']
+                        idx_in_master = master_df.index[master_df['Service Date'] == d_val]
+                        if not idx_in_master.empty:
+                            idx = idx_in_master[0]
+                            for col in display_rows_order:
+                                master_df.at[idx, col] = row[col]
+                    has_changes = True
 
         if has_changes:
             st.session_state.master_roster_df = master_df
@@ -453,8 +454,8 @@ def main():
         # SECTION B: COPY-FRIENDLY VIEW
         # ----------------------------------------------------
         st.markdown("---")
-        st.subheader("📋 View for Copying (Select All)")
-        st.caption("This entire block is formatted as simple HTML tables. Click anywhere inside, select all (Ctrl+A), and paste into Excel/Sheets.")
+        st.subheader("📋 Copy List")
+        st.caption("Select the tables below to copy to Excel. Dates are included as the first row.")
         
         full_html_stack = []
         
@@ -464,46 +465,24 @@ def main():
             if "Service Date" in sub.columns:
                 sub = sub.set_index("Service Date")
             
-            # Select columns
             valid_cols = [c for c in display_rows_order if c in sub.columns]
             sub = sub[valid_cols]
             
-            # Transpose
             t_sub = sub.T
-            # Reset index so 'Service Dates' becomes a data column (col 0)
             t_sub.index.name = "Service Dates"
             t_sub.reset_index(inplace=True)
             
-            # Create a "Values Only" dataframe where the first row is actually the headers (Dates)
-            # This ensures copy-pasting grabs the dates as data, not as a separate header element.
-            
-            # Convert proper column names (the dates) into a row
+            # Prepare data: Header becomes Row 0
             new_header_row = pd.DataFrame([t_sub.columns.values], columns=t_sub.columns)
-            
-            # Concatenate the Header Row + Data
             final_view = pd.concat([new_header_row, t_sub], ignore_index=True)
-            
-            # First row of `final_view` is now ["Service Dates", "5-Oct", "12-Oct"...]
-            # Subsequent rows are ["Sound Crew", "Micah", "Ben"...]
-            
-            # Rename columns to dummy integers so to_html doesn't print weird headers
             final_view.columns = range(final_view.shape[1])
             
-            # Convert to HTML
-            # header=False: we don't want the dummy 0,1,2,3...
-            # index=False: we don't want row numbers
             html_table = final_view.to_html(header=False, index=False, border=1)
             
-            # Enhance styling slightly for visibility, but keep it simple for copying
-            styled_html = f"""
-            <div style="margin-bottom: 25px;">
-                <strong>{month}</strong><br>
-                {html_table}
-            </div>
-            """
+            # FIXED: Removed indentation from f-string to prevent Markdown code block rendering
+            styled_html = f'<div style="margin-bottom: 25px;"><strong>{month}</strong><br>{html_table}</div>'
             full_html_stack.append(styled_html)
             
-        # Render all months as one big block
         st.markdown("\n".join(full_html_stack), unsafe_allow_html=True)
 
         st.markdown("---")
@@ -526,7 +505,6 @@ def main():
                 st.rerun()
 
         with c3:
-            # === CSV GENERATION LOGIC: STACKED MONTHS ===
             csv_stack = []
             
             months_ordered = master_df['_month_group'].unique()
