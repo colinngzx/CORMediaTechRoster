@@ -18,11 +18,9 @@ class AppConfig:
     SHEET_ID: str = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
     
     # Priority for Team Lead assignments:
-    # If these people are rostered for any tech role, they are preferred as Lead.
     PRIMARY_LEADS: Tuple[str, ...] = ("gavin", "ben", "mich lo")
     
     # Roster Roles Configuration
-    # 'sheet_col' must match the column header in your Google Sheet (case-insensitive)
     ROLES: Tuple[Dict[str, str], ...] = (
         {"label": "Sound Crew",      "sheet_col": "sound"},
         {"label": "Projectionist",   "sheet_col": "projection"},
@@ -49,7 +47,9 @@ class RosterDateSpec(NamedTuple):
         parts = []
         if self.is_combined: parts.append("MSS Combined")
         if self.is_hc: parts.append("HC")
-        if self.notes: parts.append(self.notes)
+        # Robust check for notes content
+        if self.notes and str(self.notes).strip().lower() not in ('nan', 'none', ''):
+            parts.append(str(self.notes).strip())
         return " / ".join(parts) if parts else ""
 
 class DateUtils:
@@ -89,7 +89,6 @@ class DateUtils:
 class RosterEngine:
     def __init__(self, df: pd.DataFrame):
         self.df = df
-        # Sort names alphabetically ignoring case
         self.team_names: List[str] = sorted(df['name'].unique().tolist(), key=lambda x: str(x).lower())
         self.tech_load: Dict[str, int] = {name: 0 for name in self.team_names}
         self.lead_load: Dict[str, int] = {name: 0 for name in self.team_names}
@@ -104,15 +103,12 @@ class RosterEngine:
         self.last_worked_idx[person] = week_idx
 
     def get_tech_candidate(self, role_col: str, unavailable: List[str], current_crew: List[str], week_idx: int) -> str:
-        # Check if column exists to avoid crashing
         if role_col not in self.df.columns:
             return ""
 
-        # Logic: Check if the column contains "Yes" (case insensitive, ignores spaces)
         mask = self.df[role_col].astype(str).str.strip().str.lower() == 'yes'
         candidates = self.df[mask]['name'].tolist()
 
-        # Filter: Exclude unavailable, already working today, working last week
         available_pool = [
             p for p in candidates 
             if p not in unavailable 
@@ -120,7 +116,6 @@ class RosterEngine:
             and p not in self.prev_week_crew
         ]
 
-        # Relaxation: If no one available, allow working back-to-back weeks
         if not available_pool:
             available_pool = [
                 p for p in candidates 
@@ -131,7 +126,6 @@ class RosterEngine:
         if not available_pool:
             return ""
 
-        # Weighting: Prioritize low load, then fairness by rotation
         random.shuffle(available_pool) 
         available_pool.sort(key=lambda x: (self.tech_load.get(x, 0), self.last_worked_idx.get(x, -999)))
         
@@ -142,21 +136,17 @@ class RosterEngine:
     def assign_lead(self, current_crew: List[str], unavailable: List[str], week_idx: int) -> str:
         crew_present = [p for p in current_crew if p]
         
-        # 1. Check for Primary Leads defined in Config
         primaries = [p for p in crew_present if any(lead.lower() in p.lower() for lead in CONFIG.PRIMARY_LEADS)]
         
         if primaries:
-            # Sort by who has led least
             primaries.sort(key=lambda x: (self.lead_load.get(x, 0), self.last_worked_idx.get(x, -999)))
             selected = primaries[0]
             self._update_stats(selected, "lead", week_idx)
             return selected
 
-        # 2. Fallback: Anyone currently rostered who has "Yes" in the 'Team Lead' column
         fallbacks = []
         if 'team lead' in self.df.columns:
             for person in crew_present:
-                # Check if this person has "Yes" in the team lead column
                 person_row = self.df[self.df['name'] == person]
                 if not person_row.empty:
                     val = str(person_row.iloc[0]['team lead']).strip().lower()
@@ -183,7 +173,6 @@ class RosterEngine:
                     "Lead Shifts": lead, 
                     "Total": tech + lead
                 })
-        # Return sorted alphabetically
         return pd.DataFrame(data).sort_values("Name", key=lambda x: x.str.lower())
 
 # ==========================================
@@ -193,26 +182,19 @@ class RosterEngine:
 @st.cache_data(ttl=600)
 def fetch_roster_data() -> pd.DataFrame:
     url = f"https://docs.google.com/spreadsheets/d/{CONFIG.SHEET_ID}/export?format=csv&gid=0"
-    
     try:
         df = pd.read_csv(url).fillna("")
-        # Clean headers: lowercase and strip spaces to ensure matching with CONFIG
         df.columns = df.columns.str.strip().str.lower()
-        
         if 'name' not in df.columns:
             st.error("Could not find a 'name' column in your Google Sheet.")
             return pd.DataFrame()
-            
-        # Optional: Filter by Status if you have a status column
         if 'status' in df.columns:
             df = df[(df['status'].str.lower() == 'active') | (df['status'] == '')]
-            
         df['name'] = df['name'].str.strip().astype(str)
         return df
-        
     except Exception as e:
         st.error("⚠️ Connection Error")
-        st.warning(f"Unable to read the Google Sheet. Please ensure permissions are set to 'Anyone with the link'.\n\nError details: {e}")
+        st.warning(f"Unable to read the Google Sheet. Error details: {e}")
         return pd.DataFrame()
 
 # ==========================================
@@ -232,7 +214,6 @@ def main():
         st.info("Roster data could not be loaded.")
         st.stop()
     
-    # Sort names alphabetically for the UI
     all_names = sorted(df_team['name'].unique().tolist(), key=lambda x: str(x).lower())
 
     # --- STEP 1: SELECT DATE RANGE ---
@@ -247,6 +228,7 @@ def main():
 
         if st.button("Generate Date List"):
             dates = DateUtils.generate_sundays(year, months)
+            # Initialize with explicit empty string for Notes
             st.session_state.roster_dates = [
                 {"Date": d, "Combined": False, "HC": False, "Notes": ""} for d in dates
             ]
@@ -260,6 +242,12 @@ def main():
         
         if not st.session_state.roster_dates: st.session_state.roster_dates = []
         df_dates = pd.DataFrame(st.session_state.roster_dates)
+        
+        # Ensure 'Notes' is treated as string to avoid type mixed type issues
+        if 'Notes' not in df_dates.columns:
+            df_dates['Notes'] = ""
+        df_dates['Notes'] = df_dates['Notes'].fillna("").astype(str)
+        
         if not df_dates.empty and 'Date' in df_dates.columns:
             df_dates['Date'] = pd.to_datetime(df_dates['Date']).dt.date
         
@@ -282,16 +270,14 @@ def main():
             tab_add, tab_remove = st.tabs(["➕ Add Date", "🗑️ Remove Date"])
             with tab_add:
                 c1, c2 = st.columns([1, 1])
-                with c1:
-                    new_date = st.date_input("Select Date", key="add_picker")
+                with c1: new_date = st.date_input("Select Date", key="add_picker")
                 with c2:
                     st.write(" ") 
                     st.write(" ") 
                     if st.button("Add Date"):
                         current_data = edited_df.to_dict('records')
                         if not any(d.get('Date') == new_date for d in current_data if d.get('Date')):
-                            new_entry = {"Date": new_date, "Combined": False, "HC": False, "Notes": ""}
-                            current_data.append(new_entry)
+                            current_data.append({"Date": new_date, "Combined": False, "HC": False, "Notes": ""})
                             current_data.sort(key=lambda x: x['Date'] if x.get('Date') else date.max)
                             st.session_state.roster_dates = current_data
                             st.rerun()
@@ -300,8 +286,7 @@ def main():
                 valid_dates = sorted([d['Date'] for d in edited_df.to_dict('records') if d.get('Date')])
                 if valid_dates:
                     c1, c2 = st.columns([1, 1])
-                    with c1:
-                        date_to_remove = st.selectbox("Select Date", valid_dates, format_func=lambda x: x.strftime("%d-%b"))
+                    with c1: date_to_remove = st.selectbox("Select Date", valid_dates, format_func=lambda x: x.strftime("%d-%b"))
                     with c2:
                         st.write(" ")
                         st.write(" ")
@@ -318,10 +303,20 @@ def main():
             st.rerun()
         if col_r.button("Next: Availability →"):
             cleaned_rows = []
+            # SANITIZATION: Ensure Notes are captured as strings without NaNs
             for r in edited_df.to_dict('records'):
                 if r.get('Date') and pd.notnull(r['Date']):
                     if isinstance(r['Date'], pd.Timestamp): r['Date'] = r['Date'].date()
+                    
+                    # Fix for Notes being lost or NaN
+                    raw_note = r.get('Notes', '')
+                    if pd.isna(raw_note) or str(raw_note).strip().lower() == 'nan':
+                        r['Notes'] = ""
+                    else:
+                        r['Notes'] = str(raw_note).strip()
+                        
                     cleaned_rows.append(r)
+            
             cleaned_rows.sort(key=lambda x: x['Date'])
             st.session_state.roster_dates = cleaned_rows
             st.session_state.stage = 3
@@ -374,7 +369,12 @@ def main():
 
         for idx, r_data in enumerate(st.session_state.roster_dates):
             d_obj = r_data['Date']
-            spec = RosterDateSpec(d_obj, r_data['HC'], r_data['Combined'], r_data['Notes'])
+            
+            # Double check retrieving notes logic
+            n_val = r_data.get('Notes', "")
+            if pd.isna(n_val) or str(n_val).lower() == 'nan': n_val = ""
+            
+            spec = RosterDateSpec(d_obj, r_data['HC'], r_data['Combined'], str(n_val))
             d_str_key = str(d_obj)
             unavailable_today = unavailable_by_date_str.get(d_str_key, [])
             
@@ -385,7 +385,6 @@ def main():
                 "Additional Details": spec.display_details
             }
             
-            # Loop through roles defined in Config
             for role_conf in CONFIG.ROLES:
                 person = engine.get_tech_candidate(
                     role_conf['sheet_col'], 
