@@ -6,7 +6,7 @@ from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from collections import defaultdict  # <--- FIXED: Added this import
+from collections import defaultdict 
 
 # ==========================================
 # 1. CONSTANTS & CONFIGURATION
@@ -220,6 +220,50 @@ class HtmlGenerator:
 # 4. VIEW RENDERERS (UI Components)
 # ==========================================
 
+def render_sidebar_stats(df: pd.DataFrame):
+    """Calculates and displays real-time workload counts in the sidebar."""
+    st.sidebar.title("📊 Live Load")
+    st.sidebar.caption("Updates instantly as you edit.")
+    
+    if df is None or df.empty:
+        st.sidebar.info("No roster generated yet.")
+        return
+        
+    # 1. Identify valid columns containing names
+    role_cols = [r.label for r in Roles.get_tech_roles()] + [Roles.LEAD.label, Roles.CAM2.label]
+    valid_cols = [c for c in role_cols if c in df.columns]
+    
+    # 2. Flatten data to count frequencies
+    all_names = []
+    for col in valid_cols:
+        # Get list of names, filtering out empty strings/NaNs
+        names = df[col].dropna().astype(str).tolist()
+        all_names.extend([n for n in names if n.strip()])
+    
+    if not all_names:
+        st.sidebar.warning("No assignments found.")
+        return
+
+    # 3. Create Frequency Table
+    counts = pd.Series(all_names).value_counts().reset_index()
+    counts.columns = ["Name", "Shift Count"]
+    
+    # 4. Display with Progress Bar
+    st.sidebar.dataframe(
+        counts, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Name": st.column_config.TextColumn("Team Member"),
+            "Shift Count": st.column_config.ProgressColumn(
+                "Shifts", 
+                format="%d", 
+                min_value=0, 
+                max_value=int(counts["Shift Count"].max())
+            ),
+        }
+    )
+
 def render_step_1_date_selection(state: SessionState):
     st.header("Step 1: Select Service Dates")
     c1, c2 = st.columns(2)
@@ -382,14 +426,18 @@ def render_step_4_final(state: SessionState, engine: RosterEngine):
         
         state.master_schedule = pd.DataFrame(raw_rows)
 
-    # --- 2. EDITOR INTERFACE ---
+    # --- 2. STATS (SIDEBAR) ---
+    # Renders based on the CURRENT state of master_schedule (including edits)
+    render_sidebar_stats(state.master_schedule)
+
+    # --- 3. EDITOR INTERFACE ---
     df_master = state.master_schedule
     
     # Define Layout columns
     display_cols = [Roles.DETAILS] + [r.label for r in Roles.get_tech_roles()] + [Roles.CAM2.label, Roles.LEAD.label]
     
     st.subheader("✏️ Roster Editor")
-    st.caption("Edits made here update the 'Copy List' automatically.")
+    st.caption("Edits made here update the 'Copy List' and 'Stats' automatically.")
 
     has_edits = False
     
@@ -429,7 +477,7 @@ def render_step_4_final(state: SessionState, engine: RosterEngine):
         state.master_schedule = df_master
         st.rerun()
 
-    # --- 3. COPY VIEW ---
+    # --- 4. COPY VIEW ---
     st.markdown("---")
     st.subheader("📋 View for Copying (Select All)")
     st.info("Click inside a table, `Ctrl+A` (Select All), `Ctrl+C` (Copy), paste into Excel.")
@@ -442,7 +490,7 @@ def render_step_4_final(state: SessionState, engine: RosterEngine):
             df_master.loc[mask, ["Service Date"] + display_cols]
         )
 
-    # --- 4. EXPORT ACTIONS ---
+    # --- 5. EXPORT ACTIONS ---
     st.markdown("---")
     xc1, xc2, xc3 = st.columns([1, 2, 1])
     
