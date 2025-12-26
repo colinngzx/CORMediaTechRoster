@@ -1,27 +1,20 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import calendar
 import random
-from collections import defaultdict, Counter
+from collections import defaultdict
 
 # ==========================================
 # 1. CONFIGURATION & ROLES
 # ==========================================
 class CONFIG:
-    # 1. Sound Crew (Needs 1)
-    # 2. Projectionist (Needs 1)
-    # 3. Stream Director (Needs 1)
-    # 4. Cam 1 (Needs 1)
-    # 5. Cam 2 (Optional/Placeholder)
-    # 6. Team Lead (Derived from scheduled crew)
-    
+    # Key = Column name in Excel
     ROLES = [
         {"label": "Sound Crew",      "key": "Sound",      "count": 1},
         {"label": "Projectionist",   "key": "Projection", "count": 1},
         {"label": "Stream Director", "key": "Stream Dir", "count": 1},
         {"label": "Cam 1",           "key": "Cam 1",      "count": 1},
-        # Cam 2 is usually empty/placeholder, handled manually in logic
+        # Cam 2 is usually empty/placeholder
     ]
 
 # ==========================================
@@ -30,52 +23,38 @@ class CONFIG:
 class RosterEngine:
     def __init__(self, team_df):
         self.team_df = team_df.fillna(0)
-        self.history = []  # List of {date, role, name}
-        self.points = defaultdict(int)        # Total "Business" score
         self.role_counts = defaultdict(lambda: defaultdict(int)) # name -> role -> count
-        self.prev_week_crew = [] # Who served last week? (To prevent back-to-back)
+        self.prev_week_crew = [] # To prevent back-to-back
 
     def get_candidates_for_role(self, role_col):
         """Return list of names who have '1' for this role."""
         return self.team_df[self.team_df[role_col] == 1]['Name'].tolist()
 
     def get_tech_candidate(self, role_col, unavailable_names, current_crew, week_index):
-        """
-        Pick the best person for a specific role (Sound, Projection, etc).
-        Rules:
-        1. Must be capable (marked 1 in Excel).
-        2. Not unavailable.
-        3. Not already working this Sunday (in current_crew).
-        4. PREFERENCE: Someone who didn't work last week.
-        5. PREFERENCE: Lowest 'Load Score' (balance the work).
-        """
         candidates = self.get_candidates_for_role(role_col)
         
-        # Filter exclusions
+        # Valid: Capable + Not unavailable + Not already working today
         valid = [c for c in candidates if c not in unavailable_names and c not in current_crew]
         
         if not valid:
-            return "" # No one available
+            return ""
 
-        # --- SCORING SYSTEM ---
-        # We want the person with the LOWEST score.
+        # SCORING: Lowest score wins
         scored_candidates = []
         for p in valid:
             score = 0
             
-            # 1. WORKLOAD BALANCE (Major Factor)
-            # Count how many times they have done *Any Tech Role* assigned so far
+            # 1. TOTAL WORKLOAD BALANCE
+            # Count how many times they have done ANY Tech Role so far
             tech_roles = ["Sound", "Projection", "Stream Dir", "Cam 1"]
             total_shifts = sum(self.role_counts[p][r] for r in tech_roles)
             score += (total_shifts * 10) 
 
-            # 2. AVOID BACK-TO-BACK (Medium Factor)
+            # 2. AVOID BACK-TO-BACK
             if p in self.prev_week_crew:
                 score += 50
             
-            # 3. ROTATION GAP (Minor Factor)
-            # If they did THIS specific role recently, bump score slightly
-            # (Simplistic check: randomly shuffle creates variety, but we add a small noise factor)
+            # 3. ROTATION GAP (Small Random noise to break rigid patterns)
             score += random.randint(0, 2) 
 
             scored_candidates.append((score, p))
@@ -83,26 +62,18 @@ class RosterEngine:
         # Sort by score ascending (lowest score wins)
         scored_candidates.sort(key=lambda x: x[0])
         
-        # Pick winner
         winner = scored_candidates[0][1]
         
         # Update State
-        self.points[winner] += 1
         self.role_counts[winner][role_col] += 1
         return winner
 
     def assign_lead(self, current_crew, unavailable_names, week_index):
-        """
-        Assign Team Lead from the people ALREADY scheduled in current_crew.
-        Must be a 'Lead' capable person.
-        """
         # Find who in the current crew is capable of leading
         leads = self.team_df[self.team_df['Lead'] == 1]['Name'].tolist()
         possible_leads = [p for p in current_crew if p in leads]
         
         if not possible_leads:
-            # If no one in crew is a lead, try to pull an external lead? 
-            # For this script, we return "TBD" or empty if no leader is present.
             return ""
 
         # Logic: Pick the person with the fewest LEAD shifts so far
@@ -111,8 +82,6 @@ class RosterEngine:
         
         for p in possible_leads:
             c = self.role_counts[p]['Lead']
-            # Bonus: Try not to give Lead to the Stream Director if possible (optional preference)
-            # but for now, just strictly numeric balancing
             if c < min_lead_shifts:
                 min_lead_shifts = c
                 best_lead = p
@@ -127,7 +96,6 @@ class RosterEngine:
         return ""
 
     def get_stats(self):
-        """Return a dataframe of how many times each person served."""
         data = []
         all_names = self.team_df['Name'].tolist()
         for name in all_names:
@@ -181,9 +149,9 @@ def main():
         st.header("Step 1: Upload Team List")
         st.write("Upload a CSV/Excel with columns: Name, Sound, Projection, Stream Dir, Cam 1, Lead. (Use 1 for yes, 0 for no)")
         
-        # Hardcoded default for demo if no file uploaded
+        # Hardcoded default for demo
         default_data = {
-            "Name": ["Samuel","Gavin","Ben","Timothy","Micah","mich lo","mich ler","Jessica Tong","Vivian Ng","Ee Li","Dannel","Jax","Ming Zhe","Alan","Sherry","Christine","Colin","Timmy"],
+            "Name": ["Samuel","Gavin","Ben","Timothy","Micah","mich lo","mich ler","Jessica Tong","Vivian Ng","Ee Li","Dannel","Jax","Ming Zhe","Alan","Sherry","Christine","Colin", "Timmy"],
             "Sound":      [1,1,1,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0],
             "Projection": [0,1,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1],
             "Stream Dir": [0,0,0,1,0,1,0,1,1,0,1,1,1,0,0,0,0,0],
@@ -219,29 +187,22 @@ def main():
         with c2:
             num_months = st.number_input("How many months to generate?", 1, 12, 3)
 
-        # Generate Sundays
         if st.button("Generate Sunday List"):
             sundays = []
             current = start_d
-            # Fast forward to first Sunday
             while current.weekday() != 6:
                 current += datetime.timedelta(days=1)
             
-            # Collect Sundays for X months roughly
             end_date = start_d + datetime.timedelta(days=30*num_months)
             
             while current < end_date:
                 sundays.append(current)
                 current += datetime.timedelta(days=7)
             
-            # Initialize structure in session state
             st.session_state.roster_dates = []
             for s in sundays:
-                # Default logic: First Sunday often HC? 
                 is_hc = False
                 is_combined = False
-                
-                # Heuristic: 1st Sunday of month = HC & Combined
                 if s.day <= 7:
                     is_hc = True
                     is_combined = True
@@ -255,80 +216,66 @@ def main():
         
         if st.session_state.roster_dates:
             st.divider()
-            st.write("Customize specific Sundays:")
-            
             updated_dates = []
             for i, r_data in enumerate(st.session_state.roster_dates):
                 d_str = r_data['Date'].strftime("%d-%b-%Y")
-                
                 with st.expander(f"{d_str}", expanded=False):
                     c_a, c_b, c_c = st.columns(3)
                     new_hc = c_a.checkbox(f"Holy Communion ({i})", value=r_data['HC'])
                     new_comb = c_b.checkbox(f"Combined Service ({i})", value=r_data['Combined'])
                     new_note = c_c.text_input(f"Special Note ({i})", value=r_data['Notes'])
-                    
                     updated_dates.append({
                         "Date": r_data['Date'],
                         "HC": new_hc,
                         "Combined": new_comb,
                         "Notes": new_note
                     })
-            
-            st.session_state.roster_dates = updated_dates
-
             if st.button("Confirm Dates & Continue"):
+                st.session_state.roster_dates = updated_dates
                 st.session_state.stage = 3
                 st.rerun()
 
     # --- STEP 3: UNAVAILABILITY ---
     elif st.session_state.stage == 3:
         st.header("Step 3: Unavailability")
-        st.write("Mark who is AWAY on specific dates.")
         
         df_team = st.session_state.team_data
         names = df_team['Name'].tolist()
-        
-        # Display valid dates for reference
         date_strs = [d['Date'].strftime("%Y-%m-%d") for d in st.session_state.roster_dates]
         
-        # User input: select person, select dates
         c1, c2 = st.columns(2)
         with c1:
             selected_person = st.selectbox("Select Person", names)
         with c2:
             current_blocks = st.session_state.unavailability_by_person.get(selected_person, [])
-            # Convert string dates back to list for multiselect if needed, but simple multiselect is easier
             blocked_dates = st.multiselect("Select Unavailable Dates", date_strs, default=current_blocks)
         
         if st.button("Update Person"):
             st.session_state.unavailability_by_person[selected_person] = blocked_dates
             st.success(f"Updated unavailability for {selected_person}")
 
-        # Show summary
-        st.write("### Current Blockouts:")
         if st.session_state.unavailability_by_person:
+            st.write("### Current Blockouts:")
             st.json(st.session_state.unavailability_by_person)
-        else:
-            st.caption("No blockouts set.")
 
         if st.button("Generate Roster"):
             st.session_state.stage = 4
             st.rerun()
 
-     # --- STEP 4: FINAL ROSTER WITH BALANCING ---
+    # --- STEP 4: FINAL ROSTER WITH BALANCING & COPYABLE TABLES ---
     elif st.session_state.stage == 4:
         st.header("Step 4: Final Roster")
         st.caption("Auto-optimizing for the most balanced workload...")
 
         df_team = st.session_state.team_data
         
-        # 1. Prepare Availability Dictionary
+        # 1. Prepare Availability
         unavailable_by_date_str = defaultdict(list)
         for name, unavailable_dates in st.session_state.unavailability_by_person.items():
             for d_str in unavailable_dates:
                 unavailable_by_date_str[d_str].append(name)
 
-        # 2. RUN SIMULATION LOOP (Monte Carlo)
+        # 2. RUN SIMULATION LOOP (Monte Carlo - Best of 50)
         best_schedule = []
         best_stats = pd.DataFrame()
         min_std_dev = float('inf') 
@@ -366,7 +313,7 @@ def main():
                     temp_schedule.append(date_entry)
                     temp_engine.prev_week_crew = current_crew
                 
-                # Fairness Check
+                # Check Fairness
                 stats_df = temp_engine.get_stats()
                 if not stats_df.empty:
                     current_std = stats_df['Total (Tech Only)'].std()
@@ -376,7 +323,6 @@ def main():
                         best_stats = stats_df
                 else:
                     best_schedule = temp_schedule
-                    best_stats = stats_df
 
         # 3. DISPLAY RESULTS
         df_schedule = pd.DataFrame(best_schedule)
@@ -384,7 +330,6 @@ def main():
         # Transpose Logic
         col_headers = df_schedule['Service Dates'].tolist()
         df_for_t = df_schedule.drop(columns=['Service Dates', '_full_date'])
-        
         df_transposed = df_for_t.T
         df_transposed.columns = col_headers
         
@@ -393,8 +338,7 @@ def main():
         ]
         df_final_master = df_transposed.reindex(desired_order).fillna("")
 
-        # --- THIS IS THE FIXED PART ---
-        # Display Grouped by Month using ST.TABLE (Copyable)
+        # DISPLAY GROUPED BY MONTH USING ST.TABLE (For easy Copy/Paste)
         dates_by_month = defaultdict(list)
         for entry in best_schedule:
             d_obj = entry['_full_date']
@@ -406,12 +350,11 @@ def main():
             st.subheader(month_name)
             valid_cols = [c for c in col_names if c in df_final_master.columns]
             if valid_cols:
-                # st.table renders a static table where you can select headers + rows easily
-                st.table(df_final_master[valid_cols]) 
+                # Using st.table instead of st.dataframe allows selecting HEADERS + ROWS
+                st.table(df_final_master[valid_cols])
 
         with st.expander("Show Load Statistics (Optimized)", expanded=True):
             if not best_stats.empty:
-                # Keep stats as dataframe for sorting capability, or switch to table if you want to copy this too
                 st.dataframe(best_stats, use_container_width=True)
             else:
                 st.write("No stats available.")
@@ -427,3 +370,6 @@ def main():
                 st.session_state.roster_dates = []
                 st.session_state.unavailability_by_person = {}
                 st.rerun()
+
+if __name__ == "__main__":
+    main()
