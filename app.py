@@ -10,7 +10,7 @@ from typing import List, Tuple
 # 1. CONFIGURATION
 # ==========================================
 CONFIG = {
-    "PAGE_TITLE": "SWS Roster Wizard (Even Spread Logic)",
+    "PAGE_TITLE": "SWS Roster Wizard",
     "SHEET_ID": "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo",
     "SHEET_NAME": "Team",
     "ROLES": [
@@ -19,9 +19,10 @@ CONFIG = {
         {"label": "Stream Director", "key": "stream"},
         {"label": "Cam 1",           "key": "camera"},
     ],
-    "PRIMARY_LEADS": ["gavin", "ben", "mich lo"], 
-    "DEDICATED_LEAD": "darrell",                  
-    "DEPRIORITIZED_WORKER": "darrell"             
+    # LOGIC SETTINGS
+    "PRIMARY_LEADS": ["gavin", "ben", "mich lo"], # Tier 1
+    "DEDICATED_LEAD": "darrell",                  # Tier 2
+    "DEPRIORITIZED_WORKER": "darrell"             # Avoid on tech
 }
 
 # ==========================================
@@ -63,14 +64,10 @@ class RosterEngine:
         self.df = df
         self.team_names = sorted(df['name'].unique().tolist())
         
-        # Scoring and History
         self.tech_score = {name: 0 for name in self.team_names} 
         self.lead_score = {name: 0 for name in self.team_names}
-        
-        # NEW: Track the absolute week index when they last worked
-        # Initialize with -999 so they seem like they haven't worked in ages (high priority)
+        # Track the index of the week they last worked to prevent bunching
         self.last_worked_index = {name: -999 for name in self.team_names}
-        
         self.history_prev_week: List[str] = []
 
     def get_qualified_pool(self, role_key: str, unavailable: List[str], working_today: List[str]) -> List[str]:
@@ -81,66 +78,55 @@ class RosterEngine:
         )
         candidates = self.df[mask]['name'].tolist()
         pool = [p for p in candidates if p not in unavailable and p not in working_today]
+        # Strict "No Back-to-Back" rule
         fresh_pool = [p for p in pool if p not in self.history_prev_week]
         return fresh_pool if fresh_pool else pool
 
     def pick_tech(self, pool: List[str], current_week_idx: int) -> str:
-        """
-        Picks a person based on:
-        1. Not being Darrell (Tier 2/Deprioritized)
-        2. Lowest Total Shifts (Fairness)
-        3. Lowest 'Last Worked Index' (Spacing/Gap management)
-        """
         if not pool: return "NO FILL"
         
-        # Initial shuffle to break ties randomly if everything else is equal
+        # Shuffle first to randomize ties
         random.shuffle(pool)
         
+        # Sort Logic:
+        # 1. Deprioritize Darrell (1 vs 0)
+        # 2. Fewest Total Shifts
+        # 3. Longest time since last shift (Lowest Index = Oldest Shift)
         def sort_key(person_name):
-            # 1. Darrell Penalty
             is_deprioritized = 1 if person_name.lower() == CONFIG["DEPRIORITIZED_WORKER"].lower() else 0
-            
-            # 2. Total Shifts so far
             current_points = self.tech_score.get(person_name, 0)
-            
-            # 3. Recency Penalty (The week index they last worked)
-            # Smaller number = Worked longer ago = High Priority
             last_idx = self.last_worked_index.get(person_name, -999)
-            
             return (is_deprioritized, current_points, last_idx)
 
         pool.sort(key=sort_key)
         
         selected = pool[0]
-        
-        # Update Stats
         self.tech_score[selected] += 1
         self.last_worked_index[selected] = current_week_idx
-        
         return selected
 
     def assign_lead(self, working_team: List[str], unavailable_list: List[str], current_week_idx: int) -> str:
         present_crew = [p for p in working_team if p != "NO FILL"]
         
-        # A. Primary (Tier 1) - Double Hat
+        # 1. Tier 1: Primary Leads (Double Hat)
         primary_candidates = [p for p in present_crew if p.lower() in [x.lower() for x in CONFIG["PRIMARY_LEADS"]]]
         if primary_candidates:
-            # Sort by Lead Score, then valid Tech Recency to spread the burden
+            # Sort by who has led least, then who hasn't worked tech recently
             primary_candidates.sort(key=lambda x: (self.lead_score.get(x, 0), self.last_worked_index.get(x, 0)))
             selected = primary_candidates[0]
             self.lead_score[selected] += 1
             return selected
 
-        # B. Dedicated (Tier 2) - Darrell
+        # 2. Tier 2: Dedicated Lead (Darrell)
         dedicated = CONFIG["DEDICATED_LEAD"]
         is_dedicated_available = dedicated not in unavailable_list
         if is_dedicated_available:
             self.lead_score[dedicated] += 1
-            # Mark him as working this week so he doesn't get pulled into tech immediately next week if we strictly used global logs
+            # Mark him active so the Recency logic knows he worked
             self.last_worked_index[dedicated] = current_week_idx 
             return dedicated
 
-        # C. Fallback (Tier 3)
+        # 3. Tier 3: Fallback (Anyone authorized)
         fallback_candidates = []
         for person in present_crew:
             is_auth = self.df.loc[self.df['name'] == person, 'team lead'].astype(str).str.contains("yes", case=False).any()
@@ -184,15 +170,12 @@ def fetch_data():
         st.error(f"Error: {e}")
         return pd.DataFrame()
 
+# REMOVED FORCED WHITE BACKGROUND CSS
 def apply_styling():
+    # Only keeping button color and table tweaks
     st.markdown("""
         <style>
-        .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background-color: #ffffff !important; }
-        h1, h2, h3, h4, h5, h6, p, div, span, label, .stMarkdown { color: #000000 !important; }
-        .stMultiSelect label, .stTextInput label, .stNumberInput label, .stSelectbox label { color: #000000 !important; font-weight: bold; }
-        div[data-baseweb="select"] > div { background-color: #f8f9fa !important; color: #000000 !important; border: 1px solid #ccc; }
         div.stButton > button[kind="primary"] { background-color: #007AFF !important; color: white !important; }
-        div.stButton > button p { color: white !important; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -202,7 +185,7 @@ def apply_styling():
 
 def main():
     st.set_page_config(page_title=CONFIG["PAGE_TITLE"], layout="wide")
-    apply_styling()
+    apply_styling() # Minimal styling
     
     if 'stage' not in st.session_state: st.session_state.stage = 1
     if 'roster_dates' not in st.session_state: st.session_state.roster_dates = []
@@ -261,7 +244,7 @@ def main():
 
     # STAGE 4: AVAILABILITY
     elif st.session_state.stage == 4:
-        st.subheader("4. Who is AWAY?")
+        st.subheader("4. Team Availability (Who is AWAY?)")
         date_opts = {r['Date'].strftime("%d-%b"): r['Date'] for _, r in st.session_state.event_details.iterrows()}
         team_ua = {}
         
@@ -269,11 +252,16 @@ def main():
         team_names = sorted(df_team['name'].unique())
         for i, name in enumerate(team_names):
             with cols[i%3]:
+                # Labels should be visible now in Dark Mode
                 sel = st.multiselect(name, options=date_opts.keys(), key=f"ua_{name}")
                 if sel: team_ua[name] = [date_opts[s] for s in sel]
         
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("✨ Generate Roster ➡️", type="primary"):
+        c_back, c_next = st.columns([1, 10])
+        if c_back.button("⬅ Back"):
+            st.session_state.stage = 3
+            st.rerun()
+        if c_next.button("✨ Generate Roster ➡️", type="primary"):
             final_ua = {}
             for name, dates in team_ua.items():
                 for d in dates:
@@ -289,7 +277,6 @@ def main():
         results = []
         ordered_events = st.session_state.event_details.sort_values("Date")
 
-        # Use enumerate to get the week index for spacing logic
         for week_idx, (_, row) in enumerate(ordered_events.iterrows()):
             curr_date = row['Date']
             ua = st.session_state.unavailability.get(curr_date, [])
@@ -301,19 +288,14 @@ def main():
                 "Details": " ".join([x for x in ["HC" if row['Holy Communion'] else "", "Comb" if row['Combined'] else "", f"({row['Notes']})" if row['Notes'] else ""] if x])
             }
 
-            # 1. FILL TECH ROLES
             for role_conf in CONFIG["ROLES"]:
                 pool = engine.get_qualified_pool(role_conf["key"], ua, working_today)
-                # Pass week_idx to enable "Time Since Last Shift" logic
-                person = engine.pick_tech(pool, week_idx) 
+                person = engine.pick_tech(pool, week_idx)
                 if person != "NO FILL": 
                     working_today.append(person)
                 day_data[role_conf["label"]] = person
             
-            # 2. DETERMINE LEAD
-            # Pass week_idx to update Darrell's fatigue stats if he works
             lead_for_day = engine.assign_lead(working_today, ua, week_idx)
-            
             day_data["Team Lead"] = lead_for_day
             
             engine.set_previous_workers(working_today)
@@ -330,7 +312,13 @@ def main():
             st.write(f"##### {calendar.month_name[m_idx]}")
             disp = group[col_order].set_index("Date").T.reset_index().rename(columns={"index": "Role"})
             
-            styler = disp.style.set_properties(**{'text-align': 'center', 'background-color': '#fff', 'color': '#000', 'border-color': '#ddd'})
+            # This styling forces black text on white background ONLY for the table
+            styler = disp.style.set_properties(**{
+                'text-align': 'center', 
+                'background-color': '#ffffff', 
+                'color': '#000000', 
+                'border-color': '#dddddd'
+            })
             styler = styler.applymap(lambda v: 'background-color: #e6f2ff; font-weight: bold; color: black', subset=['Role'])
             
             st.dataframe(styler, use_container_width=True, hide_index=True)
@@ -342,7 +330,7 @@ def main():
         st.divider()
         c1, c2 = st.columns([2,1])
         with c1:
-            st.caption("Darrell only scheduled if Gavin, Ben, or Mich Lo are absent from Tech Crew.")
+            st.caption("Darrell prioritized for Leads only if Tech Leads are absent.")
             st_df = engine.get_stats()
             if not st_df.empty:
                st.dataframe(st_df.set_index("Name").T, use_container_width=True)
