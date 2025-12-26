@@ -49,7 +49,8 @@ class RosterDateSpec(NamedTuple):
         if self.is_combined: parts.append("MSS Combined")
         if self.is_hc: parts.append("HC")
         if self.notes: parts.append(self.notes)
-        return " / ".join(parts) if parts else "Regular SWS"
+        # UPDATED: Returns empty string if no parts, instead of "Regular SWS"
+        return " / ".join(parts)
 
 class DateUtils:
     @staticmethod
@@ -296,7 +297,7 @@ def main():
             st.markdown("---")
             if st.form_submit_button("Generate Roster"):
                 st.session_state.unavailability_by_person = user_selections
-                # CRITICAL: Clear the existing roster so it regenerates with new availability info
+                # Clear master roster to force regeneration
                 if 'master_roster_df' in st.session_state:
                     del st.session_state['master_roster_df']
                 st.session_state.stage = 4
@@ -411,9 +412,7 @@ def main():
         
         with c1:
             if st.button("← Back"):
-                # Go back to Step 3. Note: The master_roster_df is kept
-                # so if you come back here without changing anything, it's fast.
-                # If you hit "Generate" in Step 3, that logic will delete the old df.
+                # Back to Step 3
                 st.session_state.stage = 3
                 st.rerun()
 
