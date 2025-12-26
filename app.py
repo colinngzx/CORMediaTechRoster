@@ -242,12 +242,13 @@ def main():
     # [STEP 2] Edit Details
     elif st.session_state.stage == 2:
         st.header("Step 2: Service Details")
-        st.info("ℹ️ To DELETE a date: Select the row number (left column) and press Delete/Backspace. To ADD: Click the bottom row.")
+        st.caption("Review the dates below. Use the keys at the bottom to Add or Remove specific dates.")
         
         df_dates = pd.DataFrame(st.session_state.roster_dates)
         if not df_dates.empty:
             df_dates['Date'] = pd.to_datetime(df_dates['Date']).dt.date
         
+        # We display the table
         edited_df = st.data_editor(
             df_dates,
             column_config={
@@ -255,9 +256,62 @@ def main():
             },
             num_rows="dynamic",
             use_container_width=True,
-            hide_index=False,   # Shown for selecting rows to delete
             key="date_editor"
         )
+
+        # === ADD / REMOVE DATES PANEL ===
+        st.write("### Manage Dates")
+        c_add, c_remove = st.columns(2)
+        
+        # 1. ADD Logic
+        with c_add:
+            new_date_val = st.date_input("Pick a date to add", value=None)
+            if st.button("➕ Add Single Date"):
+                if new_date_val:
+                    # Capture current state of the table (so we don't lose checkmarks)
+                    current_data = edited_df.to_dict('records')
+                    # Avoid duplicates
+                    existing_dates = [d['Date'] for d in current_data]
+                    if new_date_val not in existing_dates:
+                        current_data.append({
+                            "Date": new_date_val,
+                            "Combined": False, 
+                            "HC": False, 
+                            "Notes": ""
+                        })
+                        # Sort chronology
+                        current_data.sort(key=lambda x: x['Date'])
+                        st.session_state.roster_dates = current_data
+                        # Important: Clear the editor cache to force refresh with new data
+                        del st.session_state['date_editor']
+                        st.rerun()
+                    else:
+                        st.warning("Date already exists.")
+
+        # 2. REMOVE Logic
+        with c_remove:
+            # Dropdown of dates currently in the editor
+            current_dates = [d['Date'] for d in edited_df.to_dict('records') if pd.notna(d['Date'])]
+            # Sort them for display
+            current_dates.sort()
+            
+            dates_to_remove = st.multiselect(
+                "Select dates to remove", 
+                options=current_dates,
+                format_func=lambda x: x.strftime("%d-%b")
+            )
+            
+            if st.button("🗑️ Remove Selected"):
+                if dates_to_remove:
+                    remove_set = set(dates_to_remove)
+                    current_data = edited_df.to_dict('records')
+                    # Filter out removed
+                    new_roster = [d for d in current_data if d['Date'] not in remove_set]
+                    st.session_state.roster_dates = new_roster
+                    del st.session_state['date_editor']
+                    st.rerun()
+
+        st.markdown("---")
         
         c1, c2 = st.columns([1, 4])
         if c1.button("← Back"):
