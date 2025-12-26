@@ -1,41 +1,45 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import random
 
 # ------------------------------------------------------------------
-# CONFIGURATION & SETUP
+# CONFIGURATION
 # ------------------------------------------------------------------
 st.set_page_config(page_title="SWS Media Roster", layout="wide")
 
 # ------------------------------------------------------------------
-# 1. LOAD DATA FUNCTION
+# 1. LOAD DATA (WITH YOUR SPECIFIC LINK)
 # ------------------------------------------------------------------
-# Replace this URL with your specific Google Sheet 'published to web' CSV link
-# OR keep your existing connection method if you use st.connection
-SHEET_ID = "1W4a5k-7kHjXwFhXyZ1_aKj5mNnOPqRsTuvWxYzAbCdE" # <--- REPLACE WITH YOUR ID IF NEEDED
-SHEET_NAME = "Sheet1" # <--- REPLACE WITH YOUR SHEET NAME
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
-
 @st.cache_data(ttl=60)
 def load_data():
+    # I converted your "Edit" link to an "Export" link here:
+    sheet_id = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
+    gid = "0"
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
     try:
-        # You can replace this line with your specific st.connection code if you prefer
-        # But this works for any Public Google Sheet or CSV export
-        df = pd.read_csv(CSV_URL)
+        df = pd.read_csv(csv_url)
         
-        # --- THE FIX: CLEAN UP & SORT DATA IMMEDIATELY ---
+        # --- THE FIX: CASE-INSENSITIVE SORTING ---
+        # 1. Ensure 'Name' column is text to avoid errors
+        # (This handles if you have empty rows or numbers)
+        # We look for "Name" or "name"
+        name_col = 'Name' if 'Name' in df.columns else 'name'
+        if name_col not in df.columns:
+            st.error("Could not find a 'Name' column in your Google Sheet.")
+            return pd.DataFrame()
+
+        df[name_col] = df[name_col].astype(str)
         
-        # 1. Ensure 'Name' column is treated as text (string)
-        df['Name'] = df['Name'].astype(str)
-        
-        # 2. Sort the WHOLE dataframe alphabetically A-Z (Case Insensitive)
-        # This makes 'mich lo' appear right after 'Micah' automatically everywhere
-        df = df.sort_values(by='Name', key=lambda col: col.str.lower())
+        # 2. Sort A-Z ignoring upper/lowercase
+        # This makes 'mich ler' sort alongside 'Micah' immediately
+        df = df.sort_values(by=name_col, key=lambda col: col.str.lower())
         
         return df
     except Exception as e:
-        st.error(f"Error loading data: {e}")
+        st.error("⚠️ Error loading Google Sheet.")
+        st.error("1. Please make sure your Google Sheet Share settings are set to **'Anyone with the link'**.")
+        st.error(f"Technical Error: {e}")
         return pd.DataFrame()
 
 # ------------------------------------------------------------------
@@ -44,8 +48,7 @@ def load_data():
 def get_sunday_dates(start_date, num_weeks):
     dates = []
     current_date = start_date
-    # Find next Sunday if start is not Sunday
-    while current_date.weekday() != 6:
+    while current_date.weekday() != 6: # 6 is Sunday
         current_date += timedelta(days=1)
     
     for _ in range(num_weeks):
@@ -56,85 +59,78 @@ def get_sunday_dates(start_date, num_weeks):
 # ------------------------------------------------------------------
 # 3. MAIN APP INTERFACE
 # ------------------------------------------------------------------
-
 st.title("🎛️ SWS Media Roster Generator")
+
 df = load_data()
 
 if not df.empty:
     
+    # Identify the correct name column (Name or name)
+    name_col = 'Name' if 'Name' in df.columns else 'name'
+
     # --- STEP 1: SELECT DATES ---
     st.header("Step 1: Select Dates")
     col_d1, col_d2 = st.columns(2)
     with col_d1:
         start_date = st.date_input("Start Date", datetime.today())
     with col_d2:
-        num_weeks = st.number_input("Number of Weeks to Generate", min_value=1, max_value=12, value=4)
+        num_weeks = st.number_input("Number of Weeks", min_value=1, max_value=12, value=4)
     
     roster_dates = get_sunday_dates(start_date, num_weeks)
     st.info(f"Generating roster for: {', '.join(roster_dates)}")
 
-    # --- STEP 2: DEFINE ROLES ---
-    st.header("Step 2: Role Requirements")
-    # Define roles needed (Hardcoded for simplicity, or can be dynamic)
-    roles_needed = ["Stream Director", "Audio/Sound", "Camera", "Projection"]
-    role_config = {}
-    
-    cols = st.columns(len(roles_needed))
-    for i, role in enumerate(roles_needed):
-        with cols[i]:
-            count = st.number_input(f"{role}", min_value=0, value=1, key=f"role_{i}")
-            role_config[role] = count
-
-    # --- STEP 3: UNAVAILABILITY (ALPHABETICAL FIX APPLIED HERE) ---
+    # --- STEP 3: UNAVAILABILITY ---
     st.header("Step 3: Unavailability")
     st.info("Select Team Members and mark the dates they are UNAVAILABLE.")
 
-    # Initialize unavailability in session state if not exists
     if 'unavailable_data' not in st.session_state:
         st.session_state.unavailable_data = {}
 
     with st.container(border=True):
-        # We extract the names. KEY FIX: Use the key=str.lower to ensure sorting logic holds
-        # although df is already sorted, we double-ensure the list extraction is clean.
-        all_team_members = sorted(df['Name'].unique().tolist(), key=lambda x: str(x).lower())
+        # Double check sorting here just in case, using case-insensitive key
+        # 'mich lo' (lowercase m) will now be treated like 'Mich lo' for sorting purposes
+        all_team_members = sorted(df[name_col].unique().tolist(), key=lambda x: str(x).lower())
 
-        # CSS Grid layout for visual names
-        cols = st.columns(3) # Create 3 columns
+        cols = st.columns(3) 
         
         for i, name in enumerate(all_team_members):
+            # Skip "nan" or empty names if they exist in the sheet
+            if name == "nan" or name == "":
+                continue
+
             col_index = i % 3
             with cols[col_index]:
                 st.write(f"🚫 **{name}**")
                 
-                # Retrieve previous selection if exists
                 current_selection = st.session_state.unavailable_data.get(name, [])
                 
-                # Multiselect for dates
                 unavailable_dates = st.multiselect(
                     "Choose options",
                     roster_dates,
-                    default=list(set(current_selection) & set(roster_dates)), # Keep only valid dates
+                    default=list(set(current_selection) & set(roster_dates)),
                     key=f"unav_{name}",
                     label_visibility="collapsed"
                 )
                 
-                # Save to session state
                 st.session_state.unavailable_data[name] = unavailable_dates
 
-    # --- STEP 4: GENERATE ---
+    # --- STEP 4: GENERATE BUTTON ---
     st.write("---")
     if st.button("Generate Roster", type="primary"):
-        st.success("Roster Generation Logic would run here (add your solver logic).")
+        st.success("Logic running...")
         
-        # EXAMPLE DEBUG OUTPUT TO SHOW SORTING WORKS
-        st.write("### Debug: Availability Check")
-        processed_data = []
+        # Display current unavailability to verify
+        chk_data = []
         for name in all_team_members:
-            dates_out = st.session_state.unavailable_data.get(name, [])
-            status = f"❌ Unavailable: {dates_out}" if dates_out else "✅ Available"
-            processed_data.append({"Name": name, "Status": status})
-        
-        st.dataframe(pd.DataFrame(processed_data), use_container_width=True)
+             # Skip empty names
+            if name == "nan" or name == "": continue
 
-else:
-    st.warning("Could not load Google Sheet data. Please check your URL.")
+            dates = st.session_state.unavailable_data.get(name, [])
+            if dates:
+                chk_data.append({"Name": name, "Unavailable": ", ".join(dates)})
+        
+        if chk_data:
+            st.write("### Recorded Unavailability (Sorted):")
+            st.dataframe(chk_data)
+        else:
+            st.write("No unavailability recorded.")
