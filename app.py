@@ -294,28 +294,53 @@ def render_step_1_dates():
         st.rerun()
 
 def render_step_2_details():
-    st.subheader("2. Service Details")
-    st.info("Mark special services (Holy Communion, Combined) or add notes.")
+    st.subheader("2. Manage Service Dates & Details")
+    st.info("You can ADD or DELETE rows below. Mark special services as needed.")
     
+    # We use data_editor with num_rows="dynamic" to allow adding/deleting
     edited_df = st.data_editor(
         st.session_state.event_details,
         column_config={
-            "Date": st.column_config.DateColumn("Date", format="DD MMM", disabled=True),
+            "Date": st.column_config.DateColumn(
+                "Date", 
+                format="DD MMM YYYY", 
+                required=True,
+                help="Double-click to change date"
+            ),
             "Holy Communion": st.column_config.CheckboxColumn("Holy Communion", default=False),
             "Combined": st.column_config.CheckboxColumn("Combined Service", default=False),
+            "Notes": st.column_config.TextColumn("Notes", default=""),
         },
         hide_index=True,
         use_container_width=True,
+        num_rows="dynamic", # <--- THIS ENABLES ADD/REMOVE
         height=400
     )
+    
+    # Save edits to session state immediately
     st.session_state.event_details = edited_df
 
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2 = st.columns([1, 5])
+    
     if c1.button("⬅ Back"):
         st.session_state.stage = 1
         st.rerun()
+        
     if c2.button("Next: Availability ➡️", type="primary"):
+        # VALIDATION: Remove rows where Date might be empty/NaT if user messed up
+        clean_df = st.session_state.event_details.dropna(subset=['Date'])
+        
+        # Ensure booleans are False, not NaN (happens when adding new rows)
+        clean_df['Holy Communion'] = clean_df['Holy Communion'].fillna(False)
+        clean_df['Combined'] = clean_df['Combined'].fillna(False)
+        clean_df['Notes'] = clean_df['Notes'].fillna("")
+        
+        # Update State and Sync Dates
+        st.session_state.event_details = clean_df
+        # We must sync the master list of dates for the next step (Availability)
+        st.session_state.roster_dates = clean_df['Date'].tolist()
+        
         st.session_state.stage = 3
         st.rerun()
 
