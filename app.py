@@ -29,6 +29,7 @@ if 'unavailability' not in st.session_state:
     st.session_state.unavailability = {}
 
 # --- LOAD TEAM NAMES ---
+# Using the same ID as before
 SHEET_ID = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
 
 @st.cache_data
@@ -51,7 +52,6 @@ if 'name' not in team_df.columns:
     st.error(f"Error: 'Team' sheet needs a column named 'Name'. Found: {list(team_df.columns)}")
     st.stop()
 
-# Sort alphabetically for the UI
 all_team_names = sorted(team_df['name'].tolist())
 
 # --- HEADER ---
@@ -185,7 +185,6 @@ elif st.session_state.stage == 4:
     st.header("Stage 4: Input Availability")
     st.write("Scroll down. For each person, select the **dates they are UNAVAILABLE**.")
     
-    # Map nice strings to dates
     date_options_map = {}
     for _, row in st.session_state.event_details.iterrows():
         d = row['Date']
@@ -218,7 +217,7 @@ elif st.session_state.stage == 4:
         rerun_script()
         
     if col2.button("Next: Generate Roster ➡️", type="primary"):
-        # Flip map for processing: Date -> [People]
+        # Flip map for processing
         final_unavailability = {}
         for person, labeled_dates_list in person_unavailable_map.items():
             for label in labeled_dates_list:
@@ -232,17 +231,16 @@ elif st.session_state.stage == 4:
         rerun_script()
 
 # ==========================================
-# STAGE 5: INTELLIGENT GENERATION & HORIZONTAL OUTPUT
+# STAGE 5: INTELLIGENT GENERATION & STACKED CSV OUTPUT
 # ==========================================
 elif st.session_state.stage == 5:
     st.header("Stage 5: Final Roster")
-    st.info("Generating roster with dates as columns...")
+    st.info("Generating roster grouped by month...")
     
     # 1. Initialize logic counters
-    shift_counts = {name: 0 for name in all_team_names}
+    load_balance_counts = {name: 0 for name in all_team_names}
     previous_week_workers = []
     
-    # Define roles in specific order for top-to-bottom rows
     roles_processing_order = [
          ("Sound Crew", "sound"),
          ("Projectionist", "projection"),
@@ -251,15 +249,15 @@ elif st.session_state.stage == 5:
          ("Team Lead", "team lead") 
     ]
     
-    final_results = []
+    # We will store the flat results first to calculate logic
+    generated_rows = []
     
     sort_dates = st.session_state.event_details.sort_values(by="Date")
     
-    # 2. Loop through Dates (Columns)
+    # --- GENERATION LOOP ---
     for _, row in sort_dates.iterrows():
         current_date_obj = row['Date']
         
-        # Determine Labels
         info_parts = []
         if row['Holy Communion']: info_parts.append("HC")
         if row['Combined Service']: info_parts.append("Combined")
@@ -269,26 +267,20 @@ elif st.session_state.stage == 5:
         away_today = st.session_state.unavailability.get(current_date_obj, [])
         working_today = [] 
         
-        # Build dictionary for this single date column
-        # Keys match the Row Labels we want
+        # This dict keys will become the "Rows" in the final output
         day_roster = {
-            "Service Dates": current_date_obj.strftime("%d-%b-%Y"), # This becomes header later
+            "Month": current_date_obj.month, # Helper for grouping
+            "Service Dates": current_date_obj.strftime("%d-%b"),
             "Additional Details": " ".join(info_parts),
-            "Cam 2": "" # Explicitly empty
+            "Cam 2": "" 
         }
         
         for role_label, search_keyword in roles_processing_order:
-            
-            # --- FIND CANDIDATES ---
             if role_label == "Team Lead":
                 if 'team lead' in team_df.columns:
-                    base_candidates = team_df[
-                        team_df['team lead'].astype(str).str.contains("yes", case=False)
-                    ]['name'].tolist()
+                    base_candidates = team_df[team_df['team lead'].astype(str).str.contains("yes", case=False)]['name'].tolist()
                 else:
                     base_candidates = []
-                
-                # Logic: Filter out Darrell initially
                 darrell_free = [x for x in base_candidates if "darrell" not in x.lower()]
                 pool = darrell_free if darrell_free else base_candidates
             else:
@@ -298,86 +290,105 @@ elif st.session_state.stage == 5:
                     team_df['role 3'].astype(str).str.contains(search_keyword, case=False)
                 ]['name'].tolist()
             
-            # --- FILTERS ---
-            # Remove away
             valid = [p for p in pool if p not in away_today]
-            # Remove already working today
             valid = [p for p in valid if p not in working_today]
-            # Remove back-to-back
             fresh_legs = [p for p in valid if p not in previous_week_workers]
             
             final_pool = fresh_legs if fresh_legs else valid
             
-            # --- DARRELL BACKUP LOGIC ---
             if role_label == "Team Lead" and not final_pool:
-                 # If no one is available, check if Darrell is available (even if excluded earlier)
                  darrells = [x for x in base_candidates if "darrell" in x.lower() and x not in away_today and x not in working_today]
-                 if darrells:
-                     final_pool = darrells
+                 if darrells: final_pool = darrells
             
-            # --- SELECT ---
             selected_person = "NO FILL"
             if final_pool:
                 random.shuffle(final_pool) 
-                final_pool.sort(key=lambda x: shift_counts[x])
+                final_pool.sort(key=lambda x: load_balance_counts[x])
                 selected_person = final_pool[0]
-                
-                shift_counts[selected_person] += 1
+                load_balance_counts[selected_person] += 1
                 working_today.append(selected_person)
             
             day_roster[role_label] = selected_person
 
         previous_week_workers = working_today
-        final_results.append(day_roster)
+        generated_rows.append(day_roster)
 
-    # 3. Create DataFrame & Transpose
-    raw_df = pd.DataFrame(final_results)
+    # --- CHUNK BY MONTH & FORMAT ---
     
-    # We want these exact Rows in this order
+    # 1. Create a Master DataFrame
+    full_df = pd.DataFrame(generated_rows)
+    
+    # 2. Structure for processing
+    # Desired Row Order for the visual table
     desired_row_order = [
-        "Additional Details", 
-        "Sound Crew", 
-        "Projectionist", 
-        "Stream Director", 
-        "Cam 1", 
-        "Cam 2", 
-        "Team Lead"
+         "Additional Details", "Sound Crew", "Projectionist", 
+         "Stream Director", "Cam 1", "Cam 2", "Team Lead"
     ]
     
-    # Set Date as Index -> Transpose -> Date becomes Header
-    if "Service Dates" in raw_df.columns:
-        transposed_df = raw_df.set_index("Service Dates").T
-        
-        # Sort/Filter Rows to match desired order
-        # (The transpose creates an index of "Additional Details", "Sound Crew", etc.)
-        transposed_df = transposed_df.reindex(desired_row_order)
-    else:
-        transposed_df = pd.DataFrame()
+    # Function to create a clean mini-dataframe for display/export
+    def create_month_table(month_subset_df):
+        # Set Date as Index -> Transpose -> Date becomes Header
+        t_df = month_subset_df.set_index("Service Dates").T
+        # Filter to only the specific rows we want, in order
+        t_df = t_df.reindex(desired_row_order)
+        # Reset index so "Role" is a column 
+        t_df = t_df.reset_index().rename(columns={"index": "Role"})
+        return t_df
 
-    # Reset Index so the Row Names correspond to a clean column (for display/CSV)
-    final_output = transposed_df.reset_index()
-    final_output.rename(columns={"index": "Role"}, inplace=True)
-
-    # --- DISPLAY & EXPORT ---
     st.success("Roster Generated Successfully!")
     
-    st.write("### 📅 Final Schedule")
-    st.dataframe(final_output, use_container_width=True, height=600)
+    # Group by Month
+    grouped = full_df.groupby("Month")
     
-    st.write("### 📊 Distribution Stats")
-    stats_df = pd.DataFrame(list(shift_counts.items()), columns=["Name", "Shifts"])
+    # We will build a single string for CSV export that stacks tables
+    csv_output = io.StringIO()
+    
+    st.write("### 📅 Final Schedule")
+    
+    first_table = True
+    
+    for month_num, group in grouped:
+        month_name = calendar.month_name[month_num]
+        
+        # Visual Display
+        st.subheader(month_name)
+        visual_table = create_month_table(group)
+        st.dataframe(visual_table, use_container_width=True, hide_index=True)
+        
+        # CSV Stacking Logic
+        if not first_table:
+            csv_output.write("\n") # Add empty line between months
+            
+        # Write Date Headers
+        # To match screenshot, we want the headers to be the column names
+        visual_table.to_csv(csv_output, index=False)
+        
+        first_table = False
+
+    # --- STATS (Excluding Team Lead) ---
+    st.write("### 📊 Distribution Stats (Technical Roles Only)")
+    st.caption("Counts exclude 'Team Lead'")
+    
+    display_stats = {name: 0 for name in all_team_names}
+    technical_roles = ["Sound Crew", "Projectionist", "Stream Director", "Cam 1", "Cam 2"]
+    
+    for day_data in generated_rows:
+        for role_key in technical_roles:
+            person = day_data.get(role_key, "")
+            if person and person != "NO FILL" and person in display_stats:
+                display_stats[person] += 1
+    
+    stats_df = pd.DataFrame(list(display_stats.items()), columns=["Name", "Shifts"])
     stats_df = stats_df[stats_df['Shifts'] > 0].sort_values(by="Shifts", ascending=False)
     st.dataframe(stats_df.T, use_container_width=True)
 
-    csv_buffer = io.BytesIO()
-    final_output.to_csv(csv_buffer, index=False)
-    
+    # --- DOWNLOAD BUTTON ---
     colA, colB = st.columns(2)
     with colA:
         st.download_button(
-            label="💾 Download Horizontal CSV",
-            data=csv_buffer.getvalue(),
-            file_name="roster_horizontal.csv",
+            label="💾 Download Stacked CSV",
+            data=csv_output.getvalue(),
+            file_name="roster_final_stacked.csv",
             mime="text/csv"
         )
     with colB:
