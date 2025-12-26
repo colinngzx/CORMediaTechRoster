@@ -368,7 +368,6 @@ def main():
             st.caption("Copy names here:")
             st.code("\n".join(all_names), language="text")
 
-        # Generate Logic
         if 'master_roster_df' not in st.session_state:
             unavailable_by_date_str = defaultdict(list)
             for name, unavailable_dates in st.session_state.unavailability_by_person.items():
@@ -400,7 +399,6 @@ def main():
                     date_entry[role_conf['label']] = person
                     if person: current_crew.append(person)
 
-                # Explicitly empty Cam 2
                 date_entry["Cam 2"] = ""
 
                 t_lead = engine.assign_lead(current_crew, unavailable_today, idx)
@@ -447,15 +445,13 @@ def main():
             st.session_state.master_roster_df = master_df
             st.rerun()
 
-        # ======== STATS TABLE ========
         st.markdown("---")
-        with st.expander("📊 Live Load Statistics (Updates automatically)", expanded=True):
+        with st.expander("📊 Live Load Statistics", expanded=True):
             stats_df = calculate_stats(master_df, all_names)
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
-        # =============================
 
         st.markdown("---")
-        # 4 DISTINCT COLUMNS FOR THE BUTTONS
+        # BUTTONS
         c1, c2, c3, c4 = st.columns(4)
         
         with c1:
@@ -464,17 +460,32 @@ def main():
                 st.rerun()
 
         with c2:
-            # REGENERATE BUTTON
-            if st.button("🔄 Regenerate", use_container_width=True, help="Randomizes assignments again"):
+            if st.button("🔄 Regenerate", use_container_width=True):
                 del st.session_state['master_roster_df']
                 st.rerun()
 
         with c3:
-            csv_data = master_df.to_csv(index=False).encode('utf-8')
+            # === NEW CSV TRANSFORMATION LOGIC ===
+            # We must transpose the dataframe to match the UI visual (Dates as Header, Roles as Rows)
+            # 1. Set Date as index, 2. Keep only specific columns, 3. Transpose
+            
+            export_df = master_df.copy()
+            if "Service Date" in export_df.columns:
+                export_df = export_df.set_index("Service Date")
+            
+            # Filter to just the exact rows we view in the UI
+            valid_cols = [c for c in display_rows_order if c in export_df.columns]
+            export_df = export_df[valid_cols]
+            
+            # Flip it (Transpose) so Roles are on Left, Dates are on Top
+            final_csv_df = export_df.T
+            
+            csv_data = final_csv_df.to_csv(header=True).encode('utf-8')
+            
             st.download_button(
                 label="💾 Download CSV", 
                 data=csv_data, 
-                file_name="roster.csv", 
+                file_name="roster_horizontal.csv", 
                 mime="text/csv", 
                 type="primary", 
                 use_container_width=True
