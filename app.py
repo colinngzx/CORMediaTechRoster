@@ -14,9 +14,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AppConfig:
     PAGE_TITLE: str = "SWS Roster Wizard"
-    # REPLACE WITH YOUR OWN SHEET ID IF NEEDED
     SHEET_ID: str = "1jh6ScfqpHe7rRN1s-9NYPsm7hwqWWLjdLKTYThRRGUo"
-    
     # People who should be prioritized for Team Lead if present
     PRIMARY_LEADS: Tuple[str, ...] = ("gavin", "ben", "mich lo") 
     
@@ -173,7 +171,7 @@ class DateUtils:
 
 
 # ==========================================
-# 4. ROSTER ENGINE (UPDATED LOGIC)
+# 4. ROSTER ENGINE
 # ==========================================
 
 class RosterEngine:
@@ -184,49 +182,21 @@ class RosterEngine:
             [n for n in self.df['name'].unique() if str(n).strip() != ""],
             key=lambda x: str(x).lower()
         )
-        # Tracking Stats (Load Fairness)
+        # Tracking Stats
         self.tech_load: Dict[str, int] = defaultdict(int)
         self.lead_load: Dict[str, int] = defaultdict(int)
         self.last_worked_idx: Dict[str, int] = defaultdict(lambda: -99)
         self.prev_week_crew: List[str] = []
-        
-        # --- LOGIC 1: SOCIAL MIXING ---
-        # Track how many times pair ('Ben', 'Gavin') has worked together
-        self.pair_history: Dict[Tuple[str, str], int] = defaultdict(int)
 
-        # --- LOGIC 2: ROLE VARIETY ---
-        # Track the last Role Label assigned to a person
-        self.last_role: Dict[str, str] = defaultdict(str)
-
-    def get_social_score(self, candidate: str, current_crew: List[str]) -> int:
-        """Calculates how 'expensive' this candidate is socially based on current crew."""
-        score = 0
-        for member in current_crew:
-            # Create a sorted tuple key so (A, B) is same as (B, A)
-            pair_key = tuple(sorted((candidate, member)))
-            score += self.pair_history[pair_key]
-        return score
-
-    def record_pairs(self, full_crew: List[str]):
-        """After a Sunday is full, save the pairs so we remember them next week."""
-        # Loop through every unique pair in the list
-        unique_crew = list(set(full_crew)) # remove duplicates
-        for i in range(len(unique_crew)):
-            for j in range(i + 1, len(unique_crew)):
-                p1 = unique_crew[i]
-                p2 = unique_crew[j]
-                pair_key = tuple(sorted((p1, p2)))
-                self.pair_history[pair_key] += 1
-
-    def get_candidate(self, role_col: str, role_label: str, unavailable: List[str], current_crew: List[str], week_idx: int) -> str:
-        """Finds the best tech candidate using Load + Social Mixing + Role Variety logic."""
+    def get_candidate(self, role_col: str, unavailable: List[str], current_crew: List[str], week_idx: int) -> str:
+        """Finds the best tech candidate for a role."""
         if role_col not in self.df.columns:
-            return ""
+            return "" # Role column missing in sheet
 
-        # 1. Filter: Capabilities (Based on Google Sheet Column)
+        # Filter: People marked as capable in the sheet
         candidates_in_sheet = self.df[self.df[role_col].astype(str).str.strip() != ""]['name'].tolist()
         
-        # 2. Filter: Unavailability, Exclusivity, Burnout (Back-to-back weeks)
+        # Filter: Unavailability, Already in crew this week, Worked last week
         available = [
             p for p in candidates_in_sheet
             if p not in unavailable 
@@ -244,27 +214,15 @@ class RosterEngine:
         if not available:
             return "" # No one available
 
-        # 3. SELECTION LOGIC (The Sorting Hat)
-        # We sort the available list. The person at index 0 wins.
-        # Priority 1: Who has the fewest shifts so far? (Fairness)
-        # Priority 2: Did they do this exact role last time? (Role Variety penalty)
-        # Priority 3: Have they worked with the current crew a lot? (Social Mixing penalty)
-        # Priority 4: Random Fuzz (avoid alphabetical bias)
-        
+        # Selection Logic: Minimum Load > Random Fuzz > Longest time since last rostered
         available.sort(key=lambda x: (
-            self.tech_load[x],                              # Priority 1
-            1 if self.last_role[x] == role_label else 0,    # Priority 2 (Penalty=1 if same role)
-            self.get_social_score(x, current_crew),         # Priority 3
-            random.uniform(0, 1)                            # Priority 4
+            self.tech_load[x], 
+            random.uniform(0, 1) 
         ))
         
         selected = available[0]
         self.tech_load[selected] += 1
         self.last_worked_idx[selected] = week_idx
-        
-        # Save this role as their "last role"
-        self.last_role[selected] = role_label
-        
         return selected
 
     def assign_lead(self, current_crew: List[str], week_idx: int) -> str:
@@ -410,9 +368,7 @@ def render_step_2_details():
                 })
                 st.session_state.roster_dates.sort(key=lambda x: str(x['Date']) if x['Date'] else "")
                 st.rerun()
-    # -----------------------
 
-    # Editor logic
     df_dates = pd.DataFrame(st.session_state.roster_dates)
     if not df_dates.empty:
         df_dates['Date'] = pd.to_datetime(df_dates['Date']).dt.date
@@ -484,22 +440,18 @@ def render_step_3_unavailability(all_names: List[str]):
 def render_step_4_final(people_df: pd.DataFrame):
     st.header("Step 4: Roster Dashboard")
     
-    # Self-healing state
     if st.session_state.master_roster_df is not None:
         if '_month' not in st.session_state.master_roster_df.columns:
             st.session_state.master_roster_df = None
 
-    # --- 1. ROSTER GENERATION LOGIC ---
     if st.session_state.master_roster_df is None:
         engine = RosterEngine(people_df)
-        
         unavailable_lookup = defaultdict(list)
         for name, dates_str in st.session_state.unavailability_by_person.items():
             for d_str in dates_str:
                 unavailable_lookup[d_str].append(name)
 
         roster_rows = []
-        
         for idx, date_meta in enumerate(st.session_state.roster_dates):
             d_raw = date_meta.get('Date')
             if not d_raw: continue
@@ -510,7 +462,6 @@ def render_step_4_final(people_df: pd.DataFrame):
             else:
                 d_obj = d_raw
 
-            # Metadata Display
             details_parts = []
             if date_meta.get('Combined'): details_parts.append("Combined")
             if date_meta.get('HC'): details_parts.append("HC")
@@ -527,65 +478,37 @@ def render_step_4_final(people_df: pd.DataFrame):
             }
             
             current_crew = []
-            
-            # --- ASSIGN TECH ROLES ---
             for role in CONFIG.ROLES:
                 person = engine.get_candidate(
-                    role['sheet_col'], 
-                    role['label'],          # Pass Label for "Role Variety" logic
-                    unavailable_today, 
-                    current_crew, 
-                    idx
+                    role['sheet_col'], unavailable_today, current_crew, idx
                 )
                 row_data[role['label']] = person
                 if person: current_crew.append(person)
             
-            # Assign Misc / Lead
-            row_data["Cam 2"] = ""
+            row_data["Cam 2"] = "" 
             row_data["Team Lead"] = engine.assign_lead(current_crew, idx)
-            
             roster_rows.append(row_data)
             engine.prev_week_crew = current_crew 
-            
-            # --- RECORD SOCIAL PAIRS FOR NEXT DATE ---
-            engine.record_pairs(current_crew) # Prevents "Cliques"
         
-        if roster_rows:
-            st.session_state.master_roster_df = pd.DataFrame(roster_rows)
-        else:
-            st.session_state.master_roster_df = pd.DataFrame(
-                columns=["Service Date", "_month", "Details", "Team Lead", "Cam 2"]
-            )
+        st.session_state.master_roster_df = pd.DataFrame(roster_rows)
 
     master_df = st.session_state.master_roster_df
-
     if master_df.empty:
-        st.warning("No dates found to roster. Please go back to Step 1.")
+        st.warning("No dates found. Please go back.")
         if st.button("Start Over"): SessionManager.reset(); st.rerun()
         return
 
-    # --- 2. EDITING INTERFACE ---
     row_order = ["Details"] + [r['label'] for r in CONFIG.ROLES] + ["Cam 2", "Team Lead"]
-    
-    st.subheader("✏️ Editor")
+    st.subheader("✏️ Editor (Dates across top)")
     
     has_edits = False
-    if '_month' in master_df.columns:
-        months = master_df['_month'].unique()
-    else:
-        months = []
-
+    months = master_df['_month'].unique()
     for month in months:
         with st.expander(f"Edit {month}", expanded=True):
             sub = master_df[master_df['_month'] == month].copy()
             sub.set_index("Service Date", inplace=True)
             view_df = sub[row_order].T
-            
-            edited_view = st.data_editor(
-                view_df, 
-                use_container_width=True, 
-                key=f"editor_{month}"
-            )
+            edited_view = st.data_editor(view_df, use_container_width=True, key=f"editor_{month}")
             
             if not edited_view.equals(view_df):
                 for d_col in edited_view.columns:
@@ -600,57 +523,35 @@ def render_step_4_final(people_df: pd.DataFrame):
         st.session_state.master_roster_df = master_df
         st.rerun()
 
-    # --- 3. COPY VIEW ---
     st.markdown("---")
-    st.subheader("📋 Final List")
-    
+    st.subheader("📋 Final List (Copy to Excel)")
     csv_buffers = []
-    
     for month in months:
         sub = master_df[master_df['_month'] == month].copy()
         sub.set_index("Service Date", inplace=True)
         display_df = sub[row_order].T 
-        
-        st.markdown(
-            RosterRenderer.render_month_html(month, display_df), 
-            unsafe_allow_html=True
-        )
-        
+        st.markdown(RosterRenderer.render_month_html(month, display_df), unsafe_allow_html=True)
         display_df.index.name = "Role"
         csv_buffers.append(f"\n{month}\n")
         csv_buffers.append(display_df.to_csv())
 
-    # --- 4. LIVE LOAD STATS ---
     st.markdown("---")
     with st.expander("📊 Live Load Statistics", expanded=False):
         stats_engine = RosterEngine(people_df)
         stats_df = stats_engine.calculate_stats(master_df)
         st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
-    # --- 5. FOOTER ACTIONS ---
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
-    
     if c1.button("← Configuration"):
         st.session_state.stage = 3
         st.rerun()
-        
     if c2.button("🔄 Regenerate All"):
         st.session_state.master_roster_df = None
         st.rerun()
-        
     full_csv = "\n".join(csv_buffers)
-    c3.download_button(
-        label="💾 Download CSV",
-        data=full_csv,
-        file_name=f"roster_{datetime.now().strftime('%Y-%m-%d')}.csv",
-        mime="text/csv",
-        type="primary"
-    )
-    
-    if c4.button("Start Over"):
-        SessionManager.reset()
-        st.rerun()
+    c3.download_button("💾 Download CSV", data=full_csv, file_name=f"roster_{datetime.now().strftime('%Y-%m-%d')}.csv", mime="text/csv", type="primary")
+    if c4.button("Start Over"): SessionManager.reset(); st.rerun()
 
 # ==========================================
 # 7. MAIN ENTRY POINT
@@ -658,7 +559,6 @@ def render_step_4_final(people_df: pd.DataFrame):
 
 def main():
     SessionManager.init()
-    
     df_team = DataLoader.fetch_data(CONFIG.SHEET_ID)
     
     if df_team.empty:
@@ -668,10 +568,7 @@ def main():
             st.rerun()
         return
 
-    all_names = sorted(
-        [n for n in df_team['name'].unique() if str(n).strip() != ""], 
-        key=lambda x: str(x).lower()
-    )
+    all_names = sorted([n for n in df_team['name'].unique() if str(n).strip() != ""], key=lambda x: str(x).lower())
 
     if st.session_state.stage == 1:
         render_step_1_dates()
