@@ -21,7 +21,7 @@ def fetch_data(gid):
     return df
 
 # ==========================================
-# 2. THE CORE ENGINE (AUDITED & TESTED)
+# 2. CORE ENGINE (STRICT BALANCING)
 # ==========================================
 class UnifiedEngine:
     def __init__(self, df_team):
@@ -30,24 +30,21 @@ class UnifiedEngine:
         self.last_week_crew = set()
 
     def get_best_candidate(self, pool_names, unavailable, current_crew):
-        # Filter 1: Basic availability
+        # 1. Basic Availability
         candidates = [n for n in pool_names if n not in unavailable and n not in current_crew]
         
-        # Filter 2: STRICT ROTATION (No consecutive weeks)
+        # 2. Rotation Constraint (No back-to-back weeks)
         non_consecutive = [n for n in candidates if n not in self.last_week_crew]
-        
-        # Fallback if everyone is blocked (unlikely but safe)
         final_pool = non_consecutive if non_consecutive else candidates
         
         if not final_pool:
             return None
 
-        # Filter 3: LEAST LOADED (The "Mich Lo vs Colin" Fix)
-        # Find the minimum shifts anyone in this pool has
+        # 3. LEAST LOADED (The Balancing Fix)
+        # We only look at candidates who have the minimum number of shifts
         min_shifts = min(self.load[n] for n in final_pool)
         best_candidates = [n for n in final_pool if self.load[n] == min_shifts]
         
-        # Pick randomly among those with the same minimum load
         selected = random.choice(best_candidates)
         return selected
 
@@ -60,7 +57,7 @@ if 'ministry' not in st.session_state: st.session_state.ministry = "Media Tech"
 def main():
     # --- STAGE 1: DATE SELECTION ---
     if st.session_state.stage == 1:
-        st.header("📅 Step 1: Ministry & Months")
+        st.header("📅 Step 1: Selection")
         st.session_state.ministry = st.selectbox("Ministry", ["Media Tech", "Welcome Ministry"])
         col1, col2 = st.columns(2)
         year = col1.number_input("Year", value=2026)
@@ -74,16 +71,16 @@ def main():
                 for d in range(1, days + 1):
                     curr = date(year, m_map[m], d)
                     if curr.weekday() == 6:
-                        dates.append({"Date": curr, "HC": False, "Notes": ""})
+                        # RESTORED: Added 'Combined' column here
+                        dates.append({"Date": curr, "HC": False, "Combined": False, "Notes": ""})
             st.session_state.roster_dates = dates
             st.session_state.stage = 2
             st.rerun()
 
-    # --- STAGE 2: HC SELECTION ---
+    # --- STAGE 2: SERVICE DETAILS ---
     elif st.session_state.stage == 2:
-        st.header("⚙️ Step 2: Service Details (Mark HC Services)")
+        st.header("⚙️ Step 2: Service Details")
         df_dates = pd.DataFrame(st.session_state.roster_dates)
-        # Ensure 'HC' is visible for Welcome Ministry logic
         edited = st.data_editor(df_dates, use_container_width=True)
         if st.button("Next: Set Unavailability"):
             st.session_state.roster_dates = edited.to_dict('records')
@@ -101,14 +98,14 @@ def main():
         temp_unav = {}
         cols = st.columns(3)
         for i, n in enumerate(names):
-            temp_unav[n] = cols[i%3].multiselect(f"Unavailable: {n}", d_strs, key=f"unav_{n}")
+            temp_unav[n] = cols[i%3].multiselect(f"{n}", d_strs, key=f"un_{n}")
             
-        if st.button("Generate Balanced Roster"):
+        if st.button("Generate Final Roster"):
             st.session_state.unavailability = temp_unav
             st.session_state.stage = 4
             st.rerun()
 
-    # --- STAGE 4: FINAL ROSTER & LIVE STATS ---
+    # --- STAGE 4: FINAL ROSTER & STATS ---
     elif st.session_state.stage == 4:
         st.header(f"📋 Final {st.session_state.ministry} Roster")
         gid = MEDIA_GID if st.session_state.ministry == "Media Tech" else WELCOME_GID
@@ -116,86 +113,73 @@ def main():
         engine = UnifiedEngine(df_team)
         
         final_roster = []
-        
         for service in st.session_state.roster_dates:
             d_str = str(service['Date'])
             unav = [n for n, dates in st.session_state.unavailability.items() if d_str in dates]
             row = {"Date": service['Date'], "Notes": service['Notes']}
-            current_week_crew = []
+            week_crew = []
 
             if st.session_state.ministry == "Welcome Ministry":
-                # HC LOGIC: HC = 4 members, Non-HC = 3 members
-                num_members = 4 if service['HC'] else 3
-                row["Type"] = "HC" if service['HC'] else "Non-HC"
+                # HC LOGIC: Either HC or Combined = 4 members. Else = 3.
+                is_full_team = service['HC'] or service['Combined']
+                num_members = 4 if is_full_team else 3
                 
-                # 1. Lead Selection (Leads only)
+                # 1. Team Lead
                 lead_pool = df_team[df_team['team lead'].str.lower() == 'yes']['name'].tolist()
-                lead = engine.get_best_candidate(lead_pool, unav, current_week_crew)
+                lead = engine.get_best_candidate(lead_pool, unav, week_crew)
                 row["Team Lead"] = lead
                 if lead: 
-                    current_week_crew.append(lead)
+                    week_crew.append(lead)
                     engine.load[lead] += 1
                 
-                # 2. Member Selection + Couple Pairing
-                member_slots = [f"Member {i+1}" for i in range(num_members)]
-                for slot in member_slots:
-                    if slot in row: continue # Skip if filled by a partner
-                    
+                # 2. Members + Couple Logic
+                slots = [f"Member {i+1}" for i in range(num_members)]
+                for s in slots:
+                    if s in row: continue
                     m_pool = df_team[df_team['member'].str.lower() == 'yes']['name'].tolist()
-                    p = engine.get_best_candidate(m_pool, unav, current_week_crew)
-                    
+                    p = engine.get_best_candidate(m_pool, unav, week_crew)
                     if p:
-                        row[slot] = p
-                        current_week_crew.append(p)
+                        row[s] = p
+                        week_crew.append(p)
                         engine.load[p] += 1
-                        
-                        # COUPLE LOGIC: If p has a couple ID, find partner
+                        # Couple Check
                         c_val = df_team.loc[df_team['name'] == p, 'couple'].values[0]
                         if c_val != "":
-                            partner_name = df_team[(df_team['couple'] == c_val) & (df_team['name'] != p)]['name'].values[0]
-                            if partner_name not in unav and partner_name not in current_week_crew:
-                                # Find next empty member slot
-                                for s in member_slots:
-                                    if s not in row:
-                                        row[s] = partner_name
-                                        current_week_crew.append(partner_name)
-                                        engine.load[partner_name] += 1
+                            partner = df_team[(df_team['couple'] == c_val) & (df_team['name'] != p)]['name'].values[0]
+                            if partner not in unav and partner not in week_crew:
+                                for next_s in slots:
+                                    if next_s not in row:
+                                        row[next_s] = partner
+                                        week_crew.append(partner)
+                                        engine.load[partner] += 1
                                         break
             
             else: # Media Tech Logic
-                roles = {"Sound": "sound", "Projection": "projection", "Stream": "stream director", "Cam 1": "camera"}
+                roles = {"Sound Crew": "sound", "Projectionist": "projection", "Stream Director": "stream director", "Cam 1": "camera"}
                 for label, col in roles.items():
                     pool = df_team[df_team[col].astype(str).str.lower() != ""]["name"].tolist()
-                    p = engine.get_best_candidate(pool, unav, current_week_crew)
+                    p = engine.get_best_candidate(pool, unav, week_crew)
                     row[label] = p
                     if p: 
-                        current_week_crew.append(p)
+                        week_crew.append(p)
                         engine.load[p] += 1
                 
-                # Team Lead for Media (Ben/Gavin/Mich Lo)
-                tech_leads = ["Ben", "Gavin", "Mich Lo"]
-                available_leads = [n for n in current_week_crew if any(tl in n for tl in tech_leads)]
-                row["Team Lead"] = random.choice(available_leads) if available_leads else ""
+                # Lead for Media
+                media_leads = ["ben", "gavin", "mich lo"]
+                avail_leads = [n for n in week_crew if any(l in n.lower() for l in media_leads)]
+                row["Team Lead"] = random.choice(avail_leads) if avail_leads else ""
 
             final_roster.append(row)
-            engine.last_week_crew = set(current_week_crew) # Update rotation tracking
+            engine.last_week_crew = set(week_crew)
 
-        # Display Result
-        df_display = pd.DataFrame(final_roster)
-        st.dataframe(df_display, use_container_width=True)
+        # Output Table
+        m_df = pd.DataFrame(final_roster)
+        st.dataframe(m_df, use_container_width=True)
 
-        # LIVE STATS (The "Check Your Work" Table)
+        # Statistics Table (The Proof)
         st.divider()
-        st.subheader("📊 Live Load Statistics")
-        stats_list = []
-        for name in sorted(df_team['name'].unique()):
-            stats_list.append({"Name": name, "Total Shifts": engine.load[name]})
+        st.subheader("📊 Final Duty Counts (Verification)")
+        stats = [{"Name": n, "Total Shifts": engine.load[n]} for n in sorted(df_team['name'].unique())]
+        st.table(pd.DataFrame(stats).sort_values("Total Shifts", ascending=False))
         
-        st.table(pd.DataFrame(stats_list).sort_values("Total Shifts", ascending=False))
-        
-        if st.button("Restart"):
-            st.session_state.stage = 1
-            st.rerun()
-
-if __name__ == "__main__":
-    main()
+        if st.button("Start Over"):
