@@ -36,7 +36,7 @@ def reset_to_start():
     st.rerun()
 
 # ==========================================
-# 2. HARD-BLOCK ROSTER ENGINE
+# 2. HARD-BLOCK ENGINE (Fixing Logic)
 # ==========================================
 
 class RosterEngine:
@@ -47,12 +47,10 @@ class RosterEngine:
     def get_pool(self, role=None, gender=None, senior=None):
         pool = self.df.copy()
         if role:
-            # Match role names to CSV column headers exactly
             col_name = role.lower().replace(" crew", "").strip()
             if col_name in pool.columns:
                 pool = pool[pool[col_name].astype(str).str.lower().str.contains('yes')]
-            else:
-                return []
+            else: return []
         if gender: pool = pool[pool['male'].astype(str).str.lower().str.contains('yes')]
         if senior: pool = pool[pool['senior citizen'].astype(str).str.lower().str.contains('yes')]
         return pool['name'].tolist()
@@ -66,18 +64,16 @@ class RosterEngine:
         return None
 
     def select_best(self, pool, unavailable, current_crew, force_tier=True):
-        # 1. Filter out unavailable and double-booked
         valid = [p for p in pool if p not in unavailable and p not in current_crew]
         if not valid: return ""
-
-        # 2. Aggressive Equalization: Pick from the lowest load bracket only
+        
+        # AGGRESSIVE EQUALIZATION: Tiered sorting by load
         if force_tier:
             min_load = min(self.load[p] for p in valid)
             valid = [p for p in valid if self.load[p] == min_load]
 
         random.shuffle(valid)
-        pick = valid[0]
-        return pick
+        return valid[0]
 
 # ==========================================
 # 3. UI NAVIGATION
@@ -96,8 +92,6 @@ def step_1():
     st.session_state.ministry = st.selectbox("Select Ministry", list(MINISTRIES.keys()))
     col1, col2 = st.columns(2)
     year = col1.number_input("Year", value=date.today().year)
-    
-    # Auto-select next 3 months (e.g., Mar-May if Feb)
     all_months = list(calendar.month_name)[1:]
     curr_idx = date.today().month
     defaults = [all_months[(curr_idx + i) % 12] for i in range(3)]
@@ -110,16 +104,16 @@ def step_1():
             _, days = calendar.monthrange(year, m_map[m])
             for d in range(1, days + 1):
                 curr = date(year, m_map[m], d)
-                if curr.weekday() == 6: dates.append({"Date": curr, "HC": False, "Notes": ""})
+                if curr.weekday() == 6: dates.append({"Date": curr, "HC": False, "Combined": False, "Notes": ""})
         st.session_state.roster_dates = dates
         st.session_state.stage = 2
         st.rerun()
     nav_bar()
 
 def step_2():
-    st.header("⚙️ Step 2: Service Details")
+    st.header("⚙️ Step 2: Service Details (HC & Combined)")
     df = pd.DataFrame(st.session_state.roster_dates)
-    edited = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+    edited = st.data_editor(df, use_container_width=True, num_rows="dynamic") # RESTORED COLUMNS
     if st.button("Next: Set Unavailability →"):
         st.session_state.roster_dates = edited.to_dict('records')
         st.session_state.stage = 3
@@ -151,62 +145,53 @@ def step_4(df_team):
             unav = [n for n, dts in st.session_state.unavailability.items() if d_str in dts]
             row = {"Date": pd.to_datetime(meta['Date']).strftime("%d-%b"), 
                    "Month": pd.to_datetime(meta['Date']).strftime("%B %Y"), 
-                   "Notes": meta['Notes']}
+                   "Notes": f"{'HC ' if meta['HC'] else ''}{'Combined' if meta['Combined'] else ''} {meta['Notes']}".strip()}
             crew = []
 
             if st.session_state.ministry == "Welcome Ministry":
-                # 1. Lead First (Leaders CANNOT be members)
+                # 1. Lead First (Leaders cannot be members)
                 tl = engine.select_best(engine.get_pool(role="team lead"), unav, crew)
                 row["Team Lead"] = tl
                 if tl: crew.append(tl)
 
-                # 2. Member 1 (Male + Couple Check)
+                # 2. Member 1 (Male + Absolute Couple Check)
                 m1 = ""
                 m_pool = [p for p in engine.get_pool(gender="male") if p not in crew]
-                # Filter pool: partner MUST also be available
                 for p in m_pool:
                     partner = engine.get_partner(p)
-                    if partner and partner not in unav and p not in unav:
-                        m1 = p
-                        break
+                    # Partner must be available AND not already the leader
+                    if partner and partner not in unav and partner not in crew:
+                        m1 = p; break
                 
                 if m1:
                     row["Member 1"] = m1; crew.append(m1); engine.load[m1] += 1
                     partner = engine.get_partner(m1)
                     row["Member 2"] = partner; crew.append(partner); engine.load[partner] += 1
                 
-                # 3. Fill remaining slots
+                # 3. Fill remaining Members (max 4 if HC, else 3)
                 max_slots = 4 if meta['HC'] else 3
                 for i in range(1, max_slots + 1):
                     m_key = f"Member {i}"
-                    if m_key in row: continue
-                    
-                    # Senior Rule for last slot
-                    p = ""
-                    if i == max_slots and not any('yes' in str(df_team[df_team['name']==c]['senior citizen'].values[0]).lower() for c in crew if c):
-                        p = engine.select_best(engine.get_pool(senior=True), unav, crew)
-                    
-                    if not p: p = engine.select_best(engine.get_pool(), unav, crew)
+                    if m_key in row or (meta['Combined'] and i > 2): continue # Combined limit
+                    p = engine.select_best(engine.get_pool(), unav, crew)
                     row[m_key] = p
                     if p: crew.append(p); engine.load[p] += 1
 
             else: # Media Tech
-                for r in cfg["roles"]:
+                for r in cfg["roles"]: # RESTORED: Projectionist, Sound, etc.
                     p = engine.select_best(engine.get_pool(role=r), unav, crew)
                     row[r] = p
                     if p:
                         crew.append(p)
                         if r != "Stream Director": engine.load[p] += 1
-                
                 row["Cam 2"] = ""
-                # Priority Lead logic
                 p_leads = [c for c in crew if any(pl in c.lower() for pl in cfg["primary_leads"])]
                 row["Team Lead"] = p_leads[0] if p_leads else engine.select_best(engine.get_pool(role="team lead"), unav, crew)
 
             data.append(row)
         st.session_state.master_roster_df = pd.DataFrame(data)
 
-    # UI Editor
+    # UI Rendering
     m_df = st.session_state.master_roster_df
     roles = cfg["roles"] + cfg["extra_cols"]
     for m in m_df['Month'].unique():
@@ -219,7 +204,7 @@ def step_4(df_team):
                     for r_idx in edited.index: m_df.loc[m_df['Date'] == d_col, r_idx] = edited.at[r_idx, d_col]
                 st.session_state.master_roster_df = m_df; st.rerun()
 
-    # Stats: Exclude Team Lead from load count as requested
+    # Live Stats (Leaders ignored in Total Load)
     st.markdown("---")
     st.subheader("📊 Live Load Statistics")
     n_map = {n.lower().strip(): n for n in df_team['name'].unique()}
